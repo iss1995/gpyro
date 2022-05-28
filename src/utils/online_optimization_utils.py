@@ -1,0 +1,982 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import utils.helper_func as hlp
+import time
+
+import torch
+import gpytorch
+import gc
+
+from math import ceil
+from gpytorch.mlls import SumMarginalLogLikelihood
+from scipy.interpolate import interp1d
+from copy import deepcopy as copy
+from utils.generic_utils import setDevice
+from scipy.optimize import minimize,least_squares
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LinearRegression
+from numpy.linalg import norm
+
+
+# from sklearn.linear_model import LinearRegression
+# from sklearn.multioutput import MultiOutputRegressor
+def pointsOnBoundaries_(experiment):
+    
+    points_used_for_training = [p for p in experiment.Points if p._hasNeighbors_()]
+    coordinate_list = [p.coordinates for p in points_used_for_training]
+    coordinates = np.vstack(coordinate_list)
+    boundaries = findDomainLimits(coordinates)
+    on_boundary_ = [_isOnBoundary_(p,boundaries) for p in points_used_for_training]
+    
+    # find cornenrs as well
+    # on_corner_ = [_isOnCorner_(p,boundaries) for p in points_used_for_training]
+    on_corner_ = [False for p in points_used_for_training]
+
+    return on_boundary_, on_corner_
+
+def findDomainLimits(coordinates):
+    """
+    For rectangular domain.
+    """
+    
+    xMax = np.max(coordinates[:,0])
+    xMin = np.min(coordinates[:,0])
+    yMax = np.max(coordinates[:,1])
+    yMin = np.min(coordinates[:,1])
+    return (xMax,xMin,yMax,yMin)
+
+def _isOnBoundary_(p,boundaries):
+    
+    [xMax,xMin,yMax,yMin] = boundaries
+    coordinates = p.coordinates 
+    if coordinates[0] == xMin or coordinates[0] == xMax:
+        periphery_ = True
+    elif coordinates[1] == yMin or coordinates[1] == yMax:
+        periphery_ = True
+    else:
+        periphery_ = False
+
+    return periphery_
+
+def _isOnCorner_(p,boundaries):
+    
+    [xMax,xMin,yMax,yMin] = boundaries
+    coordinates = p.hallucinated_nodes_coordinates 
+
+    count = 0
+    for coordinate in coordinates:
+        if (coordinate[0] < xMin or coordinate[0] > xMax) or (coordinate[1] < yMin or coordinate[1] > yMax):
+            count += 1
+
+    if count == 2:
+        corner_ = True
+    else:
+        corner_ = False
+    return corner_
+
+def defineLayersRefinement(plateau_idxs,tool_heights):
+    """
+    Haven't checked, probably it's trash
+    """
+    # check where plateau idxs are continuous
+    delta_plateau_idxs = np.diff(plateau_idxs)
+    discontinuities = np.asarray( np.where(delta_plateau_idxs>1) ).squeeze()
+
+    start_idx = 0
+    continuous_height_region_idxs = []
+    for end_idx in discontinuities:
+        continuous_height_region_idxs.append( np.arange(start_idx,end_idx-1) )
+        start_idx = end_idx
+
+        print(f"end_idx : {end_idx}")
+    # find representative heights for continuous regions
+    continuous_height_region_heights = []
+    for idxs in continuous_height_region_idxs:
+        all_region_heights = tool_heights[idxs]
+        continuous_height_region_heights.append( np.mean(all_region_heights) )
+    
+    # find unique heights 
+    unique_heights = set()
+    for height in continuous_height_region_heights:
+        if height not in unique_heights:
+            unique_heights.add(height)
+
+    # group regions by height
+    concatenated_continuous_height_region_idxs = []
+    for unique_height in unique_heights:
+        tmp = []    
+        for (region_height,region_idxs) in zip(continuous_height_region_heights,continuous_height_region_idxs):
+            if unique_height == region_height:
+                tmp.append(region_idxs)
+        
+        concatenated_continuous_height_region_idxs.append(np.hstack(tmp))
+        
+    layer_heights_refined = [tool_heights[idxs] for idxs in concatenated_continuous_height_region_idxs ]
+
+    # plot heights
+    fig = plt.figure(figsize=(16,9))
+    ax = fig.add_subplot(111)
+    ax.plot(tool_heights,label = "Height")
+    for (idxs,layer) in zip(concatenated_continuous_height_region_idxs, layer_heights_refined):
+        ax.plot(idxs,layer,label= "layers found", linestyle= ":")
+    ax.set_xlabel("Samples")
+    ax.set_ylabel("Heights")
+    ax.set_title("Tool height during deposition")
+    ax.legend()
+
+def splitToLayers( points_used_for_training, tool_height_trajectory, debug = True):
+    """
+    @returns layer_idxs: list with arrays of idxs for different layers
+    @returns unique_height_values: height of each layer
+    """
+    # find all deposition height levels -> you have to look at points that get ecited 
+    excited_points = [ p for p in points_used_for_training if len(p.input_idxs)>0]
+    height_levels = np.unique(excited_points[0].excitation_delay_torch_height) # consider that all points get excited on every layer 
+
+    # find deposition idxs
+    layer_idxs = []
+    for height_level in height_levels:
+        tmp = np.where(tool_height_trajectory == height_level)[0]
+        start = tmp[0]
+        end = tmp[-1]
+        layer_idxs.append( np.arange(start,end+1,dtype = np.int64) )
+    
+    if debug:
+        print(f"len(layer_idxs) : {len(layer_idxs)} and layer_idxs[0].shape : {layer_idxs[0].shape}")
+        print(f"unique_height_values {height_levels}")
+        print(f"tool_heights.shape : {tool_height_trajectory.shape}")
+        print(f"layer_idxs[0].shape : {layer_idxs[0].shape}")
+
+        # plot heights
+        # fig = plt.figure(figsize=(16,9))
+        # ax = fig.add_subplot(111)
+        # ax.plot(tool_height_trajectory,label = "Height", linestyle= ":", color = "red")
+        # # ax.scatter(plateau_idxs,layer_heights,label= "layers found", color = "green",marker = "x")
+        # ax.plot(plateau_idxs,layer_heights,label= "layers found", color = "green")
+        # ax.set_xlabel("Samples")
+        # ax.set_ylabel("Heights")
+        # ax.set_title("Tool height during deposition")
+        # ax. legend()
+
+    return layer_idxs, height_levels
+
+class optimizeFandG:
+    
+    def __init__(self,height_level_idxs,excited_points,lengthscale = None, regularizer = 0.001):
+        self.height_level_idxs = height_level_idxs 
+        self.excited_points = excited_points 
+        self.lengthscale = lengthscale
+        self.regularizer = regularizer
+
+    def __call__(self,params):
+        """
+        return the sum over all points of the residuals that the given parameter set resulted in. When you want to define the lengthscale, fit the bell
+        to the temperature peaks while for tuning the input model parameters fit the dTdt by extrapolation. 
+        """
+        (a,b,c,d,lengthscale,e,f) = params
+        resolution = 100
+        if self.lengthscale is not None:
+            lengthscale = self.lengthscale
+            input_feature_span = 3*int(lengthscale) # how many non 0 elements to expect in the half bell 
+            if input_feature_span>resolution/2:
+                resolution = 2*input_feature_span
+            bellDer = unitBellFunctionDerivative( lengthscale, resolution = resolution)
+            bell = unitBellFunctionDerivative( lengthscale, resolution = resolution)
+            # keep only positive part for input, let negative be handled by the rest
+            bell[bellDer<0] = 0
+
+        else:
+            lengthscale *=10
+            input_feature_span = 3*int(lengthscale) # how many non 0 elements to expect in the half bell 
+            if input_feature_span>resolution/2:
+                resolution = 2*input_feature_span
+            bell = unitBellFunction( lengthscale, resolution = resolution)
+            bellDer = unitBellFunctionDerivative( lengthscale, resolution = resolution)
+            bell[bellDer<0] = 0
+            a,b,c,d,e = 1, 0, 0, 0, 0
+
+        noe = int( len(bell)/2 )
+
+        residuals = 0
+        for (idxs,p) in zip(self.height_level_idxs,self.excited_points):
+            # in this loop level you have all the idxs mapping to peaks in the thermal data for one node and height level
+            if len(idxs) == 0:
+                continue
+            new_residuals = 0
+            for idx in idxs:
+                calculated_input,excitation_heights,T,T_start = calculateGFeatures(idx,noe,p,bell,lengthscale,resolution)
+                
+                # propagate T to see how does your input model work
+                if self.lengthscale is not None:
+                    input_model = []
+                    state = T[0]
+                    for (excitation,height) in zip(calculated_input,excitation_heights):    
+                        state += G(a,b,c,d,e,F = excitation, h = height, T = state)
+                        input_model.append(state)
+                else:
+                    input_model = G(a,b,c,d,e, F = calculated_input,h = excitation_heights,T = T)
+
+
+                # evaluate residuals
+                learned = np.ones_like(T)* T[0]   + f*np.asarray(input_model)
+                error = learned - T
+                new_residuals += np.mean(error**2)  
+            
+            new_residuals /= len(idxs)
+            residuals += new_residuals + self.regularizer * np.linalg.norm(params)
+        
+        # regularize
+        # residuals += self.regularizer*np.linalg.norm(params) 
+
+        return residuals
+
+    def plotResponse(self,learned,T):
+        time = np.arange(len(learned))
+        plt.plot(time,learned,time,T)
+        plt.show()
+
+def calculateGFeatures(idx,noe,p,bell,lengthscale,resolution):
+    if idx>noe:
+        final_idx = np.min([ idx + noe + 1 , len(p.T_t_use) - 1 ])
+        bell_final_idx = resolution + np.min([ (len(p.T_t_use) - 1) - (idx + noe + 1) , 0  ])
+        T = p.T_t_use[ idx-noe+1 : final_idx ] 
+        dTdt = T - p.T_t_use[ idx - noe : final_idx - 1 ]
+        excitation_heights = p.excitation_delay_torch_height_trajectory[ idx - noe + 1 : final_idx]
+        calculated_input = bell [:bell_final_idx]
+        T_start_idx = noe - int(lengthscale) * 3
+        T_start = np.ones_like(calculated_input)*T[T_start_idx]
+        dummy = 1
+    else:
+        T = p.T_t_use[ 1 : idx + noe +1 ]
+        dTdt = T - p.T_t_use[ : idx + noe ]
+        excitation_heights = p.excitation_delay_torch_height_trajectory[ 1 : idx + noe + 1 ]
+        calculated_input = bell[- (noe+idx):]
+        T_start_idx = 0
+        T_start = np.ones_like(calculated_input)*T[T_start_idx]
+        dummy = 1
+    
+    return calculated_input,excitation_heights,T,T_start
+    
+def G(a,b,c,d,e,F,h,T,T_start = None):
+    """
+    @params a,b,c,d for model the coefficient
+    """
+
+    coef =  a + b *(1 - h) + c * (1 - T) + d * h * (1 - T)* 0
+    out = F * coef
+    
+    return out
+
+def Fsequence(peak_idxs,lengthscales,array_length,bell_resolution = 101):
+
+    out = np.zeros((array_length,))
+    for (peak_idx,lengthscale) in zip(peak_idxs,lengthscales):
+
+        # print(f"DEBUG idx {peak_idx}")
+        # form the right half-bell
+        input_feature_span = 3*ceil(lengthscale) # how many non 0 elements to expect in the half bell 
+        if input_feature_span>bell_resolution/2:
+            bell_resolution = 2*input_feature_span
+        bell_top_idx = int(bell_resolution/2) + 1 # where the bell top is
+        bell = unitBellFunctionDerivative(lengthscale, resolution = bell_resolution) 
+        bell[ bell<0 ] = 0  
+        half_bell_shape = bell[ np.max( [bell_top_idx-input_feature_span,0] ) : bell_top_idx] # keep the non-0 bell elements
+
+        # indexes to insert new half bell
+        first_half_bell_idx_on_input_trajectory = np.max( [peak_idx - input_feature_span, 0] ) 
+        first_half_bell_idx_on_bell = np.max([input_feature_span + first_half_bell_idx_on_input_trajectory - peak_idx, 0 ])
+
+        # check if you are about to over-write a previous excitaion
+        more_than_0 = out[first_half_bell_idx_on_input_trajectory : peak_idx] > 0
+        if np.sum(more_than_0)>0:
+            final_idx_with_non0_value = len(more_than_0) - np.argmax(more_than_0) - 1
+
+            # move first idx to a non-written idx
+            # first_half_bell_idx_on_input_trajectory += final_idx_with_non0_value + 1
+            first_half_bell_idx_on_input_trajectory += final_idx_with_non0_value 
+            first_half_bell_idx_on_bell = final_idx_with_non0_value
+        
+        # check if your first peak in bell trajectory is 0
+        # elif first_half_bell_idx_on_input_trajectory==0 :
+        #     first_half_bell_idx_on_bell = input_feature_span - peak_idx    
+        
+        # insert the half-bell to the input sequence
+        out[ first_half_bell_idx_on_input_trajectory : peak_idx ] = half_bell_shape [ first_half_bell_idx_on_bell :  ]
+
+    return out
+
+class optimzeM:
+    def __init__(self,x_train,x_test,y_train,y_test,regularizer,min_test_loss = 1e10):
+
+        self.x_train = x_train
+        self.x_test = x_test
+
+        self.y_train = y_train
+        self.y_test = y_test
+
+        self.min_test_loss = min_test_loss
+        self.regularizer = regularizer
+        self.objFun = None
+        self.regFun = None
+
+    def __call__(self, a):
+        """
+        Save the model achieving the min loss on the test set and return the train loss.
+        """
+
+        train_loss = objFun(a, self.x_train, self.y_train) + regFun(a,self.regularizer)
+        test_loss = objFun(a, self.x_test, self.y_test)
+
+        if test_loss<self.min_test_loss:
+            self.a_star = a
+            self.min_test_loss = test_loss
+
+        return train_loss
+
+    def test(self,a):
+        return objFun(a, self.x_test, self.y_test)
+
+    def setObjFun(self,fun):
+        self.objFun = fun
+
+    def setRegFun(self,fun):
+        self.regFun = fun
+
+def unitBellFunctionDerivative( lengthscale, resolution = 101, center = 0.0):
+
+    bell = unitBellFunction(lengthscale, resolution, center)
+    delta_bell = np.zeros_like(bell)
+    delta_bell[1:] = np.diff(bell) 
+    delta_bell[0] = delta_bell[1]
+    scale = np.max(delta_bell)
+    if scale<=1e-3:
+        scale = 1
+
+    return delta_bell/scale 
+
+# def unitBellFunction( lengthscale, resolution = 101, center = 0.0):
+   
+#     x = np.linspace( -50, 50,resolution)
+#     out = np.exp( -(( (x -  center) / lengthscale )**2) / (2**0.5) )
+
+#     return out 
+
+def unitBellFunction( lengthscale, resolution = 101, center = 0.0):
+   
+    x = np.linspace( -resolution/2, resolution/2,resolution)
+    out = np.exp( -(( (x -  center) / lengthscale )**2) / (2**0.5) )
+
+    return out 
+
+def halfBellLegthscaleModel( lengthscale_models, torch_heights_at_excitation ):
+    model = interp1d(torch_heights_at_excitation,lengthscale_models)
+    return model
+
+def modelsForInputCoefs(coefs,heights):
+    return interp1d(heights,coefs,axis = 0)
+
+class GPThetaModel(gpytorch.models.ExactGP):
+    def __init__(self, train_x, train_y, likelihood, mean_len_prior = 0.025, var_len_prior = 0.1):
+        super(GPThetaModel, self).__init__(train_x, train_y, likelihood)
+        
+        # lengthscale_prior = gpytorch.priors.NormalPrior(0.1, 0.2) # good results 4/8
+        # print(F"DEBUG {mean_len_prior},{var_len_prior}")
+        lengthscale_prior = gpytorch.priors.NormalPrior(mean_len_prior, var_len_prior) # good results 4/8
+        # outputscale_prior = gpytorch.priors.NormalPrior(0.1, 0.2)
+        # mean_prior = None
+        # mean = torch.mean(train_y)
+    
+        # if mean>-100.0:
+        #     self.mean_module = gpytorch.means.ConstantMean(prior=mean_prior)
+        #     self.mean_module.initialize(constant=torch.mean(train_y))
+
+        # else:
+        # self.mean_module = gpytorch.means.ConstantMean()
+        self.mean_module = bilinearMean(train_x,train_y)
+
+        # self.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.RBFKernel(lengthscale_prior=lengthscale_prior))
+        # self.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.RBFKernel(lengthscale_prior=lengthscale_prior) + gpytorch.kernels.LinearKernel())
+        # self.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.MaternKernel(nu=2.5,lengthscale_prior=lengthscale_prior) + gpytorch.kernels.LinearKernel())
+        self.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.MaternKernel(nu=1.5,lengthscale_prior=lengthscale_prior) )
+
+    def forward(self, x):
+        mean_x = self.mean_module(x)
+        # print("mean_x size :",mean_x.size())
+        covar_x = self.covar_module(x)
+        return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
+
+def GPOpt( models, likelihoods, learning_rate = 0.1, training_iter = 4000, loss_thress = 1e-3, no_improvement_thress = 200, gp_model_to_load = '', _device = None, messages_ = False ):
+    """
+    Implementation for optimization algorithm for GPModels
+    @params models : gpytorch.models.IndependentModelList
+    @params likelihoods : gpytorch.likelihoods.LikelihoodList
+    @params learning_rate : real
+    @params training_iter : int - > maximum number of itterations
+    @params loss_thress : real - > thresshold for no improvement in the marginal likelihood
+    @params gp_model_to_load : string - > name of model to load. if empty then optimize.
+    
+    @returns  copy(models), copy(likelihoods) : copy of models and likelihoods
+    """
+    device = setDevice(_device)
+
+    gp_likelihhod_to_load = gp_model_to_load + "_like"
+    gp_data_to_load = gp_model_to_load + "_data"
+    gp_data = None
+
+    models.train()
+    likelihoods.train()
+
+    best_models = copy(models)
+    
+    min_loss = 1e4
+    min_loss_prev = min_loss
+    no_improvement = 0
+    
+    # Use the adam optimizer
+    optimizer = torch.optim.Adam(models.parameters(), lr=learning_rate)  # Includes GaussianLikelihood parameters
+    # gpytorch.settings.cholesky_jitter(float = 1e-4)
+
+    # "Loss" for GPs - the marginal log likelihood
+    mll = SumMarginalLogLikelihood(likelihoods, models)
+    lrcurr = learning_rate
+    use_Adam_ = True
+
+    # load model 
+    if gp_model_to_load:
+        state_dict_model = torch.load(gp_model_to_load + ".pth")
+        state_dict_likelihoods = torch.load(gp_likelihhod_to_load+ ".pth")
+        
+        # check if there any data to load
+        try: 
+            gp_data = pd.read_csv(gp_data_to_load + ".csv", header = None, index_col = None).to_numpy()[0]
+            
+            new_gp_data = []
+            for data in gp_data:
+                data = data.replace('[ ','')
+                data = data.replace(' ]','')
+                data = data.replace('[','')
+                data = data.replace(']','')
+                data = data.replace('  ',' ')  
+                data = data.replace('\n','')
+                data = data.split(' ')
+                new_gp_data.append( data )
+
+            model_temperatures = torch.tensor(  [float(d) for d in new_gp_data[0]] ).to(device = device)            
+            model_points = torch.tensor(  [[float(d) for d in feature if d !=""] for feature in new_gp_data[1:]] ).to(device = device)
+
+            gp_data = { 'temperatures': [model_temperatures], 'weights': [model_points]}
+            likelihood = gpytorch.likelihoods.GaussianLikelihood()
+            gp_list = []
+
+            for feature in model_points:
+                # initialize likelihood and model
+                gp_list.append(GPThetaModel(model_temperatures, feature, copy(likelihood)).to(device = device))
+
+            models = gpytorch.models.IndependentModelList(*gp_list).float().to(device = device)
+            likelihoods = gpytorch.likelihoods.LikelihoodList(*[gp.likelihood for gp in gp_list]).to(device = device)
+        except Exception as e:
+            print(e)
+            
+        models.load_state_dict(state_dict_model)
+        likelihoods.load_state_dict(state_dict_likelihoods)
+        
+    else:
+        for i in range(training_iter):
+            # Zero gradients from previous iteration
+            min_loss_prev = min_loss
+            optimizer.zero_grad()
+
+            # Output from model
+            output = models(*models.train_inputs)
+            loss = -mll(output, models.train_targets)
+            
+            #early_stopping
+            if loss.item()<min_loss:
+                best_models = copy(models)
+                min_loss = loss.item()
+
+            if np.abs(min_loss-min_loss_prev)<loss_thress:
+                no_improvement += 1
+                if no_improvement > no_improvement_thress:
+                    if use_Adam_ :
+                        if messages_:
+                            print("\tOptimization restart")
+                        lrcurr *= 0.1
+                        optimizer = torch.optim.AdamW(models.parameters(), lr= lrcurr)
+                        use_Adam_ = False
+                        no_improvement = 0
+                    else:
+                        break
+                
+            else:
+                no_improvement = 0
+
+            loss.backward() #comment for lbfgs
+            if not (i+1)%100:
+                if messages_:
+                    print('Iter %d/%d - Loss: %.3f  ' % (
+                        i + 1, training_iter, min_loss
+                    ))
+            optimizer.step()
+
+        models = best_models
+    models.eval()
+    likelihoods.eval()
+    return copy(models), copy(likelihoods), copy(gp_data)
+
+def initializePoints(points_updated_online):
+    for p in points_updated_online:
+        p.T_t_use = None
+        p.excitation_delay_torch_height_trajectory = None
+        p.excitation_delay_torch_height = None
+        p.input_idxs = None
+        p.Delta_T = None
+        p.Delta_T_ambient = None    
+
+    return points_updated_online
+
+def updatePoints(points_used_for_training,points_updated_online,idxs):
+    max_idx = idxs[-1]
+    for (p,p_online) in zip(points_used_for_training,points_updated_online):
+        
+        p_online.T_t_use = p.T_t_use[:max_idx]
+        p_online.excitation_delay_torch_height_trajectory = p.excitation_delay_torch_height_trajectory[:max_idx]
+        p_online.Delta_T = p.Delta_T[:,:max_idx]
+        p_online.Delta_T_ambient = p.Delta_T_ambient[:,:max_idx]
+
+        p_online.excitation_delay_torch_height = p.excitation_delay_torch_height[p.input_idxs <= max_idx]
+        p_online.input_idxs = p.input_idxs[ p.input_idxs <= max_idx]
+    
+    return points_updated_online
+
+def learnF( excited_points, states,  bounds, regularizer, param_f0, underestimate_lengthscales = 0):
+
+    excitations = []
+    for height_level in states:
+        point_excitations_on_level_map = [] # 1 array for each point telling you which peaks to consider
+        for p in excited_points:
+            point_excitations_on_level_map.append(  p.input_idxs[ p.excitation_delay_torch_height == height_level ] )
+    
+        excitations.append( point_excitations_on_level_map )
+
+    ## fit lengthscales that look like the bells you see
+    parameters_per_height_level = []
+
+    ## learn the lengthscale
+    for i,height_level_idxs in enumerate(excitations):
+        # optimizer = ifu.optimizeLayerInputParameters(height_level_idxs,excited_points, regularizer= F_reg)
+        optimizer = optimizeFandG(height_level_idxs,excited_points, regularizer= regularizer)
+        res = minimize( optimizer , param_f0, bounds= bounds, method= "L-BFGS-B", tol = 1e-12 )
+        param_f0 = res.x
+        parameters_per_height_level.append(res.x[:-1]) # omit the last one
+
+        if i == 0:
+            first_state_param_f0 = res.x
+
+        # ## for testing
+        # check =optimizeFandG(height_level_idxs,excited_points)
+        # resp = check(param_f0)
+
+    param_f0 = first_state_param_f0
+    # incorporate negative state
+    # if np.any(states<0):
+    #     neg_states = states[states<0]
+    #     for neg_state in neg_states:
+    #         parameters_per_height_level.insert(0,parameters_per_height_level[0])
+    ## scale lengthscales
+    lengthscales = 10* np.abs( [x[4] for x in parameters_per_height_level] ) * (1-underestimate_lengthscales)
+    
+    return lengthscales, excitations, param_f0
+
+def learnG( states, excitations, lengthscaleModel, excited_points, bounds, regularizer, param_g0):
+
+    parameters_per_height_level = []
+    # param_g0 = np.ones((7))*0.1
+    for i,(height_lvl,height_level_idxs) in enumerate(zip(states,excitations)):
+
+        height_lengthscale = lengthscaleModel(height_lvl)
+        optimizer = optimizeFandG(height_level_idxs,excited_points,height_lengthscale,regularizer = regularizer)
+        # optimizer = ifu.optimizeLayerInputParameters(height_level_idxs,excited_points,height_lengthscale,regularizer = G_reg)
+        res = minimize( optimizer , param_g0, bounds= bounds, method= "L-BFGS-B", tol = 1e-12 )
+        G_param = res.x[:-1] # omit the last one
+        parameters_per_height_level.append(res.x[:-1])
+        param_g0 = res.x
+        if i == 0:
+            first_state_param_g0 = res.x
+
+    param_g0 = first_state_param_g0
+    # if np.any(states<0):
+    #     neg_states = states[states<0]
+    #     for neg_state in neg_states:
+    #         parameters_per_height_level.insert(0,parameters_per_height_level[0])
+    coefficients = np.asarray(parameters_per_height_level)[:,:5]
+
+    return coefficients, param_g0
+
+def formFeatureTargetPairs(on_boundary_,on_corner_,lengthscaleModel,ipCoefModel,points_updated_online,d_grid=27,HORIZON=1):
+    ## form features
+    layer_point_features = [] 
+    layer_point_targets = [] 
+    for p in points_updated_online:
+
+        Delta_T = p.Delta_T[1:,:] 
+        L = np.sum(Delta_T,axis=0) / (d_grid/100)
+        overheating = p.Delta_T[0,:] 
+
+        boundary_ = on_boundary_[p.node]
+        corner_ = on_corner_[p.node]
+
+        Delta_T_amb = np.zeros_like(p.Delta_T_ambient[:,:])
+        if boundary_:
+            if corner_:
+                Delta_T_amb[0,:] = p.Delta_T_ambient[0,:]  
+                Delta_T_amb[1,:] = p.Delta_T_ambient[0,:] 
+            else:
+                Delta_T_amb[0,:] = p.Delta_T_ambient[0,:] 
+
+        ## calculate F for point
+        observed_peak_indexes = p.input_idxs
+        lengthscales_for_point_input = lengthscaleModel(p.excitation_delay_torch_height)
+        array_length =  np.max(overheating.shape)
+        F = Fsequence(observed_peak_indexes,lengthscales_for_point_input,array_length,bell_resolution = 100)
+        
+        ## calculate G for point
+        excitation_heights = p.excitation_delay_torch_height_trajectory
+        # ip_coef_tr = ifu.interpolateInputParameters( ipCoefModel, p.excitation_delay_torch_height_trajectory)
+        # ip_coef_tr = ipCoefModel(p.excitation_delay_torch_height_trajectory[:,None]).T
+        ip_coef_tr = ipCoefModel(p.excitation_delay_torch_height_trajectory).T
+        G_val = G(*ip_coef_tr, F = F, h = excitation_heights, T = overheating)
+
+        overheating *= (1-F)
+        L *= (1-F)
+        Delta_T_amb *= (1-F)
+
+        point_features = np.vstack( (overheating, L, Delta_T_amb, G_val) ) # 1,1,2,1 features
+        p._setFeatures(point_features)
+
+    xs_train, ys_train, band_state ,section_idxs = hlp.splitDataByState( points_updated_online, HORIZON)  
+    return    xs_train, ys_train, band_state ,section_idxs
+
+def learnM(xs_train,ys_train,m_parameters_per_building_layer_height, bounds, regularizer, param_m0):
+    theta_M = []
+    nog = len(ys_train)
+    # find previous solution
+    a_star_prev = param_m0
+    # if len(m_parameters_per_building_layer_height)>0:
+        # a_star_prev = m_parameters_per_building_layer_height[-1]
+    # else:
+    #     a_star_prev = None
+
+    for i,( x_group_train, y_group_train) in enumerate(zip(xs_train,ys_train)):
+        #print(f"Group {i+1}/{nog}:")
+
+        # split to train and test set
+        X_train, X_test, y_train, y_test = train_test_split(x_group_train.T, y_group_train, train_size= 0.75, shuffle = True, random_state = 934)
+        #print(f"\tTraining samples samples' shape {X_train.shape} | Training targets' shape {y_train.shape}")
+        #print(f"\tTesting samples samples' shape {X_test.shape} | Testing targets' shape {y_test.shape}")
+
+        # create an optimizer object and run the optimization
+
+        opt = optimzeM(X_train, X_test, y_train, y_test, regularizer)
+        res = least_squares( opt, param_m0, ftol = 1e-12, bounds= bounds, method= "trf", loss = "arctan")
+
+        # check if current solution is better than the previous one
+        if a_star_prev is not None:    
+            if len(a_star_prev) > i:            
+                new_params = opt.test( opt.a_star )
+                # old_params = opt.test(  a_star_prev[i] )
+                old_params = opt.test(  a_star_prev )
+                if old_params<new_params:
+                    # opt.a_star = a_star_prev[i]
+                    opt.a_star = a_star_prev
+                    
+        # keep solution and convergence metrics
+        theta_M.append(opt.a_star)
+        param_m0 = opt.a_star
+
+        #print(f"\tGroup Optimization completed. Train loss: {res.fun} | Validation loss {opt.min_test_loss}\n ")
+    theta_M = np.asarray(theta_M)
+    return theta_M, param_m0
+
+def objFun(a,x,y): 
+    return np.mean( ((y-a.dot(x.T))/np.mean(np.abs(y)))**2 )
+
+def regFun(a, regularizer ):
+    return regularizer*np.linalg.norm(a[:-1])
+
+def learnDelay(excited_points):
+    delays = []
+    heights_at_excitation = []
+    temperatures_at_excitation = []
+    for p in excited_points:
+        max_idx = np.min([ len(p.excitation_delay), len(p.excitation_delay_torch_height) ])
+        delays.append(p.excitation_delay[:max_idx])
+        heights_at_excitation.append(p.excitation_delay_torch_height[:max_idx])
+        temperatures_at_excitation.append(p.excitation_temperatures[:max_idx])
+
+    target_delays = np.hstack(delays).reshape(-1,1)
+    feature_heights_at_excitation = np.hstack(heights_at_excitation).reshape(-1,1)
+    feature_temperatures_at_excitation = np.hstack(temperatures_at_excitation).reshape(-1,1)
+
+    # all_features = np.hstack((feature_heights_at_excitation,feature_temperatures_at_excitation))
+    all_features = feature_heights_at_excitation
+
+    ## train linear model
+    # train_x, test_x, train_y, test_y = train_test_split(feature_heights_at_excitation,target_delays, test_size=0.,random_state= 0)
+    delay_model = LinearRegression(fit_intercept=True, normalize= True)
+    # train_x, test_x, train_y, test_y = train_test_split(all_features,target_delays, test_size=0.2,random_state= 0)
+    train_x = all_features
+    train_y = target_delays
+    delay_model.fit( train_x, train_y.squeeze())
+
+    ## test model
+    #print(f"test_x.shape : {test_x.shape}")
+    # forecasts = delay_model.predict(test_x)
+    # me = np.mean(np.abs(forecasts-test_y.squeeze()))
+    #print(f"Linear delay model test mean error : {me}")
+    return delay_model
+
+def initializeGPModels( parameters, unique_states, GP_normalizers = None, device_tp_optimize = 'cpu', output_scale = 2, length_mean = 0.025, length_var = 0.1):
+
+    device = setDevice(device_tp_optimize)
+    if torch.cuda.is_available():
+        gc.collect()
+        torch.cuda.empty_cache()
+
+    gp_list = []
+    likelihood = gpytorch.likelihoods.GaussianLikelihood()
+    likelihood.noise_covar.register_constraint("raw_noise", gpytorch.constraints.GreaterThan(1e-10))
+
+    if GP_normalizers is None:
+        GP_weights_normalizers = []
+
+    for i,feature in enumerate(parameters):
+
+        feature_tensor = torch.from_numpy(feature.T).to(device = device)
+        # normalize features
+        if GP_normalizers is None:
+            normalizer_idx = torch.argmax(torch.abs(feature_tensor))
+            normalizer = feature_tensor[normalizer_idx]
+        else:
+            normalizer = GP_normalizers[i]
+        normalized_feature_tensor = feature_tensor/normalizer
+
+        # band_nominal_T_tensor = torch.from_numpy(band_nominal_T.T).to(device = device)
+        band_nominal_height_tensor = torch.from_numpy(unique_states.T).to(device = device)
+
+        current_model = GPThetaModel(band_nominal_height_tensor, normalized_feature_tensor, copy(likelihood), length_mean , length_var).to(device = device)
+
+        mean_feature = torch.max(torch.abs(normalized_feature_tensor))
+        var_feature = torch.var(normalized_feature_tensor)
+        current_model.covar_module.outputscale_prior = gpytorch.priors.NormalPrior(mean_feature, mean_feature*2)
+        
+        if GP_normalizers is None:
+            GP_weights_normalizers.append(normalizer)
+        
+        gp_list.append( current_model )
+
+        if mean_feature>1e-7:
+            # print(F"DEBUG {output_scale}")
+
+            hypers = {
+            'likelihood.noise_covar.noise': 5e-4 * mean_feature.clone().detach().requires_grad_(True),
+            'covar_module.outputscale': output_scale*mean_feature.clone().detach().requires_grad_(True),
+            }
+            gp_list[-1].initialize(**hypers)
+
+    models = gpytorch.models.IndependentModelList(*gp_list).float().to(device = device)
+    likelihoods = gpytorch.likelihoods.LikelihoodList(*[gp.likelihood for gp in gp_list]).to(device = device)
+    if GP_normalizers is None:
+        GP_weights_normalizers = torch.tensor(GP_weights_normalizers)
+    else:
+        GP_weights_normalizers = GP_normalizers
+
+    return models,likelihoods, GP_weights_normalizers, band_nominal_height_tensor, device
+
+def statesForBoundaries( points_used_for_training ,on_boundary_ ):
+    #  find the closest node on grid to boundary points
+    nodes_on_boundaries = np.asarray( [p.node for (p,b) in zip(points_used_for_training,on_boundary_) if b] )
+    points_on_boundaries = np.asarray( [p for (p,b) in zip(points_used_for_training,on_boundary_) if b] )
+
+    internal_nodes = np.asarray( [p.node for (p,b) in zip(points_used_for_training,on_boundary_) if not b] )
+
+    ## Distance matrix: distances between nodes
+    nop = len(points_used_for_training)
+    D = np.zeros((nop,nop))
+    ### Build upper half
+    for i,pi in enumerate(points_used_for_training):
+        for j,pj in enumerate(points_used_for_training[i::]):
+            D[i,i+j] = norm(pj.coordinates - pi.coordinates)
+
+    ### Build lower symmetric half
+    D = D + D.T - np.diag(D.diagonal())
+
+    # find closest nodes
+    nodes_closest_to_boundaries = []
+    for d in D[nodes_on_boundaries,:]:
+        arg = np.argmin(d[internal_nodes])
+        closest_internal_node = internal_nodes[arg]
+        nodes_closest_to_boundaries.append(closest_internal_node)
+
+    # update state sequence of points on boundaries with the opposite state of their closest nodes
+    for (p,closest_node) in zip( points_on_boundaries, nodes_closest_to_boundaries):
+        closest_point =  points_used_for_training[closest_node]
+        p.excitation_delay_torch_height_trajectory = -closest_point.excitation_delay_torch_height_trajectory
+        p.excitation_delay_torch_height = -closest_point.excitation_delay_torch_height
+
+    return points_used_for_training
+
+class bilinearMean(gpytorch.means.Mean):                                                                                                                                                                        
+    def __init__(self, xs, ys, batch_shape=torch.Size()):
+        """
+        You need at least 3 datapoints on each direction
+        """
+        super().__init__()
+
+        A_p = torch.stack( (xs[-3:], torch.ones((3,))) ).T
+        sol_p,*_ = torch.linalg.lstsq(A_p,ys[-3:])
+        self.w_p = sol_p[0]
+        self.b_p = sol_p[1]
+
+        # linear model for negative states
+        A_n = torch.stack( (xs[:3], torch.ones((3,))) ).T
+        sol_n,*_ = torch.linalg.lstsq(A_n,ys[:3])
+        self.w_n = sol_n[0]
+        self.b_n = sol_n[1]
+        
+    def forward(self, x):
+
+        sigm_p = self.sigmoid(x)
+        sigm_n = 1 - sigm_p
+
+        ones = torch.ones_like(x)
+        return ( self.pos(sigm_p*x,sigm_p*ones) + self.neg(sigm_n*x,sigm_n*ones) ).T
+    
+    def sigmoid(self,x,alpha = 20):
+        return 1/(1+torch.exp(-alpha*x))
+    
+    def pos(self,x,o):
+        return self.w_p*x + self.b_p*o
+    
+    def neg(self,x,o):
+        return self.w_n*x + self.b_n*o
+    
+def onlineOptimization(layer_idxs, unique_state_values, points_used_for_training, bounds_f, bounds_g, bounds_m, F_reg, G_reg, M_reg, param_f0, param_g0, param_m0, on_boundary_, on_corner_, d_grid ):
+    """
+    Simulate online optimization by only feeding the system with data streamed on each layer.
+    """
+    points_updated_online = copy(points_used_for_training)
+    # initialize online Points
+    points_updated_online = initializePoints(points_updated_online)
+    
+    g_parameters_per_building_layer_height = []
+    f_parameters_per_building_layer_height = []
+    m_parameters_per_building_layer_height = []
+    all_training_times_per_state = []
+
+    print("Starting optimization...")
+    # simulating learning layer-by-layer
+    for i,(idxs,building_layer_height) in enumerate(zip( layer_idxs, unique_state_values)): 
+    # Learn all layers at once 
+    # for (idxs,building_layer_height) in zip( [layer_idxs[-1]], [unique_state_values[-1]]): 
+        # print(f"\tLayer {i}.")
+
+        # update data in points
+        points_updated_online = updatePoints(points_used_for_training,points_updated_online,idxs)
+        states = np.unique([p.excitation_delay_torch_height_trajectory for p in points_updated_online])
+        
+        ## find peaks in layer
+        excited_points = [ p for p in points_updated_online if len(p.input_idxs)>0]
+
+        t = time.time()
+
+        theta_F, excitations, param_f0 = learnF( points_updated_online, states, bounds = bounds_f, regularizer =  F_reg, param_f0 = param_f0)
+        # negative states are not excited. Overwrite the weights for a better fit in the gp.
+        state_0_idx = np.argmin(np.abs(states))
+        theta_F[:state_0_idx] = theta_F[state_0_idx]
+
+        lengthscaleModel = halfBellLegthscaleModel( theta_F, states) # underestimate 
+
+        # learn G
+        theta_G, param_g0 = learnG( states, excitations, lengthscaleModel, excited_points, bounds = bounds_g, regularizer = G_reg, param_g0 = param_g0)
+        # negative states are not excited. Overwrite the weights for a better fit in the gp.
+        theta_G[:state_0_idx,:] = theta_G[state_0_idx,:]
+
+        ipCoefModel = modelsForInputCoefs(theta_G, states)
+
+        # learn m coupled with G and F
+        xs_train, ys_train, band_state ,section_idxs = formFeatureTargetPairs(on_boundary_,on_corner_,lengthscaleModel,ipCoefModel,points_updated_online,d_grid=d_grid,HORIZON=1)
+
+        theta_M, param_m0 = learnM(xs_train,ys_train,m_parameters_per_building_layer_height, bounds = bounds_m, regularizer = M_reg, param_m0 = param_m0)
+
+        elapsed = time.time() - t
+        all_training_times_per_state.append(elapsed/len(states))
+
+        # negative states are not excited. Overwrite the theta_g for a better fit in the gp.
+        theta_M[:state_0_idx,-1] = theta_M[state_0_idx,-1]
+        # boundaries are only in negative states. Overwrite the theta_g for a better fit in the gp.
+        theta_M[state_0_idx:,2:-1] = theta_M[state_0_idx,2:-1]
+
+        f_parameters_per_building_layer_height.append(theta_F)
+        g_parameters_per_building_layer_height.append(theta_G)
+        m_parameters_per_building_layer_height.append(theta_M)
+
+    return f_parameters_per_building_layer_height, g_parameters_per_building_layer_height, m_parameters_per_building_layer_height, all_training_times_per_state
+
+    
+def batchOptimization(layer_idxs, unique_state_values, points_used_for_training, bounds_f, bounds_g, bounds_m, F_reg, G_reg, M_reg, param_f0, param_g0, param_m0, on_boundary_, on_corner_, d_grid, epochs = 3 ):
+    """
+    Feed data coming from all layers at once.
+    """
+    all_training_times_per_state = []
+
+    print("Starting optimization...")
+    # Learn all layers at once 
+    for epoch in epochs:
+        g_parameters_per_building_layer_height = []
+        f_parameters_per_building_layer_height = []
+        m_parameters_per_building_layer_height = []
+        for (idxs,building_layer_height) in zip( [layer_idxs[-1]], [unique_state_values[-1]]): 
+            # print(f"\tLayer {i}.")
+
+            # update data in points
+            states = np.unique([p.excitation_delay_torch_height_trajectory for p in points_used_for_training])
+            
+            ## find peaks in layer
+            excited_points = [ p for p in points_used_for_training if len(p.input_idxs)>0]
+
+            t = time.time()
+
+            theta_F, excitations, param_f0 = learnF( points_used_for_training, states, bounds = bounds_f, regularizer =  F_reg, param_f0 = param_f0)
+            # negative states are not excited. Overwrite the weights for a better fit in the gp.
+            state_0_idx = np.argmin(np.abs(states))
+            theta_F[:state_0_idx] = theta_F[state_0_idx]
+
+            lengthscaleModel = halfBellLegthscaleModel( theta_F, states) # underestimate 
+
+            # learn G
+            theta_G, param_g0 = learnG( states, excitations, lengthscaleModel, excited_points, bounds = bounds_g, regularizer = G_reg, param_g0 = param_g0)
+            # negative states are not excited. Overwrite the weights for a better fit in the gp.
+            theta_G[:state_0_idx,:] = theta_G[state_0_idx,:]
+
+            ipCoefModel = modelsForInputCoefs(theta_G, states)
+
+            # learn m coupled with G and F
+            xs_train, ys_train, band_state ,section_idxs = formFeatureTargetPairs(on_boundary_,on_corner_,lengthscaleModel,ipCoefModel,points_used_for_training,d_grid=d_grid,HORIZON=1)
+
+            theta_M, param_m0 = learnM(xs_train,ys_train,m_parameters_per_building_layer_height, bounds = bounds_m, regularizer = M_reg, param_m0 = param_m0)
+
+            elapsed = time.time() - t
+            all_training_times_per_state.append(elapsed/len(states))
+
+            # negative states are not excited. Overwrite the theta_g for a better fit in the gp.
+            theta_M[:state_0_idx,-1] = theta_M[state_0_idx,-1]
+            # boundaries are only in negative states. Overwrite the theta_g for a better fit in the gp.
+            theta_M[state_0_idx:,2:-1] = theta_M[state_0_idx,2:-1]
+
+            f_parameters_per_building_layer_height.append(theta_F)
+            g_parameters_per_building_layer_height.append(theta_G)
+            m_parameters_per_building_layer_height.append(theta_M)
+
+    return f_parameters_per_building_layer_height, g_parameters_per_building_layer_height, m_parameters_per_building_layer_height, all_training_times_per_state
