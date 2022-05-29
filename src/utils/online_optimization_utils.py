@@ -1,3 +1,4 @@
+from cv2 import Laplacian
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -17,6 +18,65 @@ from scipy.optimize import minimize,least_squares
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LinearRegression
 from numpy.linalg import norm
+
+class gTerm:
+    def __init__(self,params = None) -> None:
+        """
+        @param params : array with G model parameters
+        """
+        if params is None:
+            self.params = np.ones((3,1))
+        else:
+            self.params = params
+    
+    def __call__(self,h,T):
+        """
+        @param h : array with heights, dim (n,)
+        @param T : array with Temperatures, dim (n,)
+        """
+        regressor = np.vstack(( np.ones_like(h), 1-h, 1-T)).T #dim (n,3)
+        return np.matmul(regressor,self.params).squeeze() # dim (n,)
+    
+    def update(self,params):
+        self.params = params
+
+class mTerm:
+    def __init__(self, neighbors, params = None, d_grid = 27, d_grid_norm = 100, delta = None, ambient_T = 0) -> None:
+        """
+        @param neighbors : list of lists containing idxs to neighboring nodes, e.g. neighbors_i = [j,k,l,m] with j,k,l,m being the idxs of i's neighbors
+        @param params : array with M model parameters
+        """
+        if params is None:
+            self.params = np.ones((3,1))
+        else:
+            self.params = params
+        self.neighbors = neighbors
+        self.number_of_neighbors = np.asarray([len(neigh) for neigh in neighbors])
+        self.d_grid = d_grid / d_grid_norm
+        
+        if delta is None:
+            self.delta = np.zeros_like(self.number_of_neighbors).astype(np.bool8)
+            self.delta[self.number_of_neighbors<4] = True
+        else:
+            self.delta = delta
+        
+        self.ambient_T = ambient_T
+    
+    def __call__(self,h,T):
+        """
+        @param h : array with heights, dim (n,)
+        @param T : array with Temperatures, dim (n,)
+        """
+        neighbor_Ts = [[T[i] for i in neighbor] for neighbor in self.neighbors]
+        laplacians = (self.number_of_neighbors*T - np.sum(neighbor_Ts, axis = -1))/(self.d_grid) # dim (n,)
+        regressor = np.vstack(( T, laplacians, T - self.ambient_T)).T #dim (n,3)
+        return np.matmul(regressor,self.params).squeeze() # dim (n,)
+    
+    def update(self,params):
+        self.params = params
+    
+    def updateTambient(self,ambient_T):
+        self.ambient_T = ambient_T
 
 def pointsOnBoundaries_(experiment):
     
