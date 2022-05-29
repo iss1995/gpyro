@@ -3,67 +3,9 @@
 import numpy as np
 
 import torch
-import gpytorch
-
 from copy import deepcopy 
 
 # %%
-def findK(system_dynamics_size):
-    """
-    @params size of optimization vector
-    @returns number of convolutional filters
-    """
-    return int(system_dynamics_size/5-1)
-
-def fromDynVecToDynamics(dyn_vec, k):
-    '''
-    dyn_vec = [M_N,M_B_conv,INfeat]. This is a function transforming the optimization vector to a dyb^namical system. 
-    @params k : int - > convolutional filters used
-    '''
-    # dyn_vec = np.atleast_2d(dyn_vec).reshape(2*k+2,-1) 
-    # dyn_vec = np.atleast_2d(dyn_vec).reshape(3*(k+1),-1) 
-
-    dyn_vec = np.atleast_2d(dyn_vec).reshape(5*(k+1),-1) # just commented out, but why was it here?
-    
-    # if dyn_vec.shape[1] == 2*k+2:
-    #     dyn_vec = dyn_vec.T
-    # k = int(dyn_vec.shape[1]/2 - 1) #
-    # dyn_vec_Mconv = dyn_vec[:k,:]
-    # dyn_vec_Mel = np.atleast_2d(dyn_vec[k,:]).reshape(1,-1)
-    # dyn_vec_Bconv = dyn_vec[k+1:-1,:]
-    # dyn_vec_Bel = np.atleast_2d(dyn_vec[-1,:]).reshape(1,-1)
-    # dyn_vec_Bconv1 = dyn_vec[ k+1 : 2*k,:]
-    # dyn_vec_Bel1 = np.atleast_2d( dyn_vec[2*k,:]).reshape(1,-1)
-    # dyn_vec_Bconv2 = dyn_vec[2*k+1:-1,:]
-    # dyn_vec_Bel2 = np.atleast_2d(dyn_vec[-1,:]).reshape(1,-1)
-    T_i_conv = dyn_vec[ :k ,: ]
-    T_i = dyn_vec[ k,:]
-    T_j_conv =  dyn_vec[  k+1 : 2*k+1 ,:]
-    T_j =  dyn_vec[ 2*k+1 ,:]
-    DT_amb_conv = dyn_vec[ 2*k+2 : 3*k+2 ,:]
-    DT_amb = dyn_vec[ 3*k+2 ,:]
-    IF_1_conv = dyn_vec[ 3*k+3 : 4*k+3 ,:]
-    IF_1 = dyn_vec[ 4*k+3 ,:]
-    IF_2_conv = dyn_vec[ 4*k+4 : 5*k+4 ,:]
-    IF_2 = dyn_vec[ 5*k+4 ,:]
-
-
-    # print("dyn_vec_conv ",dyn_vec_conv.shape)
-    return np.vstack((
-                    T_i_conv, T_j_conv, T_j_conv, T_j_conv, T_j_conv,
-                    T_i, T_j, T_j, T_j, T_j,
-                    DT_amb_conv, DT_amb_conv,
-                    DT_amb, DT_amb,
-                    IF_1_conv,IF_2_conv,
-                    IF_1,IF_2
-                    # dyn_vec_Mconv, dyn_vec_Mconv, dyn_vec_Mconv, dyn_vec_Mconv,
-                    # dyn_vec_Mel, dyn_vec_Mel, dyn_vec_Mel, dyn_vec_Mel,
-                    # dyn_vec_Bconv, dyn_vec_Bconv,
-                    # dyn_vec_Bel, dyn_vec_Bel,
-                    # dyn_vec_Bconv1, dyn_vec_Bconv1, dyn_vec_Bconv2, dyn_vec_Bconv2,
-                    # dyn_vec_Bel1, dyn_vec_Bel1, dyn_vec_Bel2, dyn_vec_Bel2 
-                    ))
-
 def rolling_window(a, window):
     pad = np.ones(len(a.shape), dtype=np.int32)
     # pad = np.full((len(a.shape),window),a[0]) # iss
@@ -79,21 +21,8 @@ def rolling_window(a, window):
         strides = a.strides + (a.strides[0],) # but when the other fails this works
     return np.lib.stride_tricks.as_strided(a, shape=shape, strides=strides) 
 
-def linearModelCoef(temperatures,normalizer,k,models,likelihoods):
-    """
-    Infer coeficients for the linear models.
-    """
-    n = int(9*(k + 1)) # number of models
-    with torch.no_grad(), gpytorch.settings.fast_pred_var():
-        y_cuda = torch.from_numpy(temperatures/normalizer).float().cuda()
-        feature_vec_cuda = likelihoods(*models(*[y_cuda for i in range(n)]))
-        feature_vec = list(map(lambda x: x.mean.squeeze().cpu().detach().numpy(),feature_vec_cuda))
-        return  fromDynVecToDynamics(feature_vec, k = k)
-
 def moving_average(x, w):
     extended = np.pad(x,(int(w/2),int(w/2)-1),'edge')
-    # print(f"extended.shape : {extended.shape}")
-    # print(extended)
     return np.convolve(extended, np.ones(w), 'valid') / w
 
 def movingAvg(x, w):
@@ -105,8 +34,6 @@ def movingAvg(x, w):
     else:    
         extended = np.pad(x,(int(w)-1,0),'edge')
         out = np.convolve(extended, np.ones(w), 'valid') / w
-    # print(f"extended.shape : {extended.shape}")
-    # print(extended)
     return out
 
 def setDevice(choice = None):
@@ -132,10 +59,6 @@ def setDevice(choice = None):
 
     return deepcopy(device)
 
-def piecewiseLinear(x,y0,k1,k2):
-    x0 = 0.5
-    return np.piecewise( x, [x<x0], [lambda x : k1*x + y0-k1*x0, lambda x : k2*x + y0-k2*x0])
-
 def checkConcave_(idx,vector):
     "Only locally"
     try:
@@ -146,3 +69,112 @@ def checkConcave_(idx,vector):
     except Exception as e:
         print(e)
         return None
+
+def tryconvert(value, default, *types):
+    """
+    try to convert value to types and if you fail return default.
+    """
+    for t in types:
+        try:
+            return t(value)
+        except (ValueError, TypeError):
+            continue
+    return default
+
+def pointsOnBoundaries_(experiment):
+    
+    points_used_for_training = [p for p in experiment.Points if p._hasNeighbors_()]
+    coordinate_list = [p.coordinates for p in points_used_for_training]
+    coordinates = np.vstack(coordinate_list)
+    boundaries = findDomainLimits(coordinates)
+    on_boundary_ = [_isOnBoundary_(p,boundaries) for p in points_used_for_training]
+    
+    # find cornenrs as well
+    # on_corner_ = [_isOnCorner_(p,boundaries) for p in points_used_for_training]
+    # on_corner_ = [False for p in points_used_for_training]
+
+    return on_boundary_
+
+def splitDataByState( training_points, steps_to_look_ahead = 1):
+
+    # find unique deposition heights. -1 for not being activated
+    all_heights = np.vstack([p.excitation_delay_torch_height_trajectory for p in training_points]).T
+    unique_heights = np.unique(all_heights)
+
+    # for each point find the idxs of the every height level
+    height_level_idxs_container = [ ] # list of lists -> every list corresponds to a point and includes the idxs for every height level  
+    for p in training_points:
+        tmp = []
+
+        for height in unique_heights:
+            idxs_on_layer = np.asarray(np.where(p.excitation_delay_torch_height_trajectory == height))
+            tmp.append(idxs_on_layer)
+        
+        height_level_idxs_container.append(tmp)
+
+    # create the training segments
+    xs_train = []
+    ys_train = []
+    band_heights = []
+    for state,height in enumerate(unique_heights):
+        xs_current_state = []
+        ys_current_state = []
+        heights_current_state = []
+        
+        # assign only data that were collected when printing this state 
+        for (p,point_idxs) in zip(training_points,height_level_idxs_container):
+            idxs_to_pick = np.atleast_1d(point_idxs[state].squeeze())
+            if len(idxs_to_pick)>0:
+                xs_current_state_point = p.features[:,idxs_to_pick]
+                ys_current_state_point = p.T_t_use[idxs_to_pick] - p.T_t_use[idxs_to_pick-1]
+
+                xs_current_state.append( xs_current_state_point[:,:-steps_to_look_ahead] )
+                ys_current_state.append( ys_current_state_point[steps_to_look_ahead:] )
+
+                heights_current_state.append ( np.ones( ( len(idxs_to_pick)-1, ) )*height )
+        
+        xs_train.append(np.hstack( xs_current_state ))
+        ys_train.append( np.hstack(ys_current_state ))
+        band_heights.append( np.hstack(heights_current_state ))
+    
+    return xs_train, ys_train, unique_heights, height_level_idxs_container
+
+def findDomainLimits(coordinates):
+    """
+    For rectangular domain.
+    """
+    
+    xMax = np.max(coordinates[:,0])
+    xMin = np.min(coordinates[:,0])
+    yMax = np.max(coordinates[:,1])
+    yMin = np.min(coordinates[:,1])
+    return (xMax,xMin,yMax,yMin)
+
+def _isOnBoundary_(p,boundaries):
+    
+    [xMax,xMin,yMax,yMin] = boundaries
+    coordinates = p.coordinates 
+    if coordinates[0] == xMin or coordinates[0] == xMax:
+        periphery_ = True
+    elif coordinates[1] == yMin or coordinates[1] == yMax:
+        periphery_ = True
+    else:
+        periphery_ = False
+
+    return periphery_
+
+def _isOnCorner_(p,boundaries):
+    
+    [xMax,xMin,yMax,yMin] = boundaries
+    coordinates = p.hallucinated_nodes_coordinates 
+
+    count = 0
+    for coordinate in coordinates:
+        if (coordinate[0] < xMin or coordinate[0] > xMax) or (coordinate[1] < yMin or coordinate[1] > yMax):
+            count += 1
+
+    if count == 2:
+        corner_ = True
+    else:
+        corner_ = False
+    return corner_

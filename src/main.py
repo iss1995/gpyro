@@ -77,7 +77,7 @@ def main(save_plots_ = False):
 
     # on_corner_ all false 
     # TODO: remove on_corner_ ?
-    on_boundary_,on_corner_ = onopt.pointsOnBoundaries_(experiment)
+    on_boundary_ = onopt.pointsOnBoundaries_(experiment)
 
     layer_idxs, unique_height_values = onopt.splitToLayers(points_used_for_training=points_used_for_training,tool_height_trajectory = experiment.tool_deposition_depth[::experiment.subsample], debug = False)
 
@@ -99,10 +99,9 @@ def main(save_plots_ = False):
             "param_g0": param_g0,
             "param_m0": param_m0,
             "on_boundary_": on_boundary_,
-            "on_corner_": on_corner_,
             "d_grid": d_grid}
-    f_parameters_per_building_layer_height, g_parameters_per_building_layer_height, m_parameters_per_building_layer_height, all_training_times_per_state = onopt.onlineOptimization(layer_idxs, states, points_used_for_training, **kwargs )
-    # f_parameters_per_building_layer_height, g_parameters_per_building_layer_height, m_parameters_per_building_layer_height, all_training_times_per_state = onopt.batchOptimization(layer_idxs, states, points_used_for_training, **kwargs )
+    # f_parameters_per_building_layer_height, g_parameters_per_building_layer_height, m_parameters_per_building_layer_height, all_training_times_per_state = onopt.onlineOptimization(layer_idxs, states, points_used_for_training, **kwargs )
+    f_parameters_per_building_layer_height, g_parameters_per_building_layer_height, m_parameters_per_building_layer_height, all_training_times_per_state = onopt.batchOptimization(layer_idxs, states, points_used_for_training, **kwargs )
 
     print(f"Mean Training time per state {np.mean(all_training_times_per_state)}")
     # %%
