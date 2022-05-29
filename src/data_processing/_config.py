@@ -48,3 +48,8 @@ def config():
         param_f0[-3] = 1 # lengthscale
 
         return FILES_FOLDER,POINT_TEMPERATURE_FILES,POINT_COORDINATES,TRAJECTORY_FILES,RESULTS_FOLDER,RESULTS_FOLDER_GP,RESULTS_FOLDER_MODEL,d_grid,bounds_f,F_reg,bounds_g,G_reg,bounds_m,M_reg,output_scale,length_mean,length_var,param_f0,param_g0,params_m0
+
+
+def configHyperparameters():
+        G_reg, F_reg, M_reg, output_scale, length_mean, length_var = (1.3494328312494594e-06, 3.8252949492342524e-05, 0.05727953475125568, 1.1575308075243074, 0.5469046384472692, 0.06122193346017071)
+        return G_reg, F_reg, M_reg, output_scale, length_mean, length_var

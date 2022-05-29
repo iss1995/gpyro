@@ -648,7 +648,7 @@ def initializeGPModels( parameters, unique_states, GP_normalizers = None, device
             # print(F"DEBUG {output_scale}")
 
             hypers = {
-            'likelihood.noise_covar.noise': 5e-4 * mean_feature.clone().detach().requires_grad_(True),
+            'likelihood.noise_covar.noise': 5e-3 * mean_feature.clone().detach().requires_grad_(True),
             'covar_module.outputscale': output_scale*mean_feature.clone().detach().requires_grad_(True),
             }
             gp_list[-1].initialize(**hypers)

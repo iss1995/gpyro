@@ -253,7 +253,7 @@ def plotNodeEvolution( T_state_np_central_plate, timestamps, T_state_nominal_np_
         plt.savefig(folder_for_node_plots_for_experiment + f"/node_{i}.svg", bbox_inches='tight', dpi = 120)
         plt.close()
 
-def plotNodeUncertainEvolution( T_mean, l_b, u_b, timestamps, T_mean_nominal, RESULTS_FOLDER ,file, title = None, xlabel = None, ylabel = None, yticks = [200,400,600,800,1000], xticks = [500,1000,1500,2000], ytikcs_label = None, xtikcs_label = None ):
+def plotNodeUncertainEvolution( T_mean, l_b, u_b, timestamps, T_mean_nominal, RESULTS_FOLDER ,file, title = None, xlabel = None, ylabel = None, yticks = [0,200,400,600,800,1000], xticks = [0,500,1000,1500,2000], ytikcs_label = None, xtikcs_label = None ):
 
     y_max = np.max(u_b)
     y_min = np.min(l_b)
@@ -293,23 +293,19 @@ def plotNodeUncertainEvolution( T_mean, l_b, u_b, timestamps, T_mean_nominal, RE
         if ylabel is not None:
             ax1.set_xlabel(ylabel)
 
-        ax1.set_xlim([x_min, x_max])
-        ax1.set_ylim([y_min, y_max])
+        ax1.set_xlim([min(x_min,0), x_max])
+        ax1.set_ylim([min(y_min,0), y_max])
 
         plt.grid(True,alpha = 0.5)
-        # plt.grid(True,axis = "y")
-        # if i == 22 or i == 48:
-        #     ax1.legend(loc = 4, bbox_to_anchor = (0.2,-0.22,0.82,0.5))
-        #     plt.xticks([])
         plt.yticks(yticks)
         if ytikcs_label is None:
-            ax1.set_yticklabels([])
+            ax1.set_yticklabels(yticks)
         else:
             ax1.set_yticklabels(ytikcs_label)
         
         plt.xticks(xticks)
         if xtikcs_label is None:
-            ax1.set_xticklabels([])
+            ax1.set_xticklabels(xticks)
         else:
             ax1.set_xticklabels(xtikcs_label)
 

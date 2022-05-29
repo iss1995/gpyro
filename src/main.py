@@ -182,7 +182,7 @@ def main(save_plots_ = False):
     ###############################################################################################
     starting_point = 300
     steps = 4000
-    files_to_evaluate = [f"T{i}" for i in range(2,27)]
+    files_to_evaluate = [f"T{i}" for i in range(2,28)]
     
     results = []
     all_dtw_distances = []
