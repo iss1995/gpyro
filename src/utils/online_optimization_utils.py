@@ -1,4 +1,3 @@
-from cv2 import Laplacian
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -62,7 +61,7 @@ class mTerm:
         
         self.ambient_T = ambient_T
     
-    def __call__(self,h,T):
+    def __call__(self,T):
         """
         @param h : array with heights, dim (n,)
         @param T : array with Temperatures, dim (n,)
@@ -77,6 +76,76 @@ class mTerm:
     
     def updateTambient(self,ambient_T):
         self.ambient_T = ambient_T
+
+class fTerm:
+    def __init__(self, bell_resolution = 101, params = None) -> None:
+        """
+        @param bell_resolution : int with length of peak intervals. If too short, then the peaks won't fit 
+        @param params : array with 1 model parameters
+        """
+        if params is None:
+            self.params = np.ones((1,))
+        else:
+            self.params = params
+        self.bell_resolution = bell_resolution
+    
+    def __call__(self,peak_idxs,array_length):
+        """
+        @param h : array with heights, dim (n,)
+        @param T : array with Temperatures, dim (n,)
+        """
+        out = []
+        for node_peaks in peak_idxs:
+            out.append( Fsequence( node_peaks, self.params, array_length, bell_resolution = self.bell_resolution) )
+        return out
+    
+    def update(self,params):
+        self.params = params
+        
+
+class loss_F:
+    def __init__(self, state_excitation_idxs, excited_points, regularizer, f, parameter_scale = 10) -> None:
+        self.state_excitation_idxs = state_excitation_idxs 
+        self.excited_points = excited_points 
+        self.f = f
+        self.regularizer = regularizer
+        self.parameter_scale = parameter_scale
+    
+    def __call__(self, params):
+        # update lengthscale
+        self.f.update(params*self.parameter_scale)
+        
+        # check if bell resolution is too little
+        f_span = 3*ceil(params*self.parameter_scale)
+        if f_span>self.f.bell_resolution/2:
+            self.f.bell_resolution = 2*f_span
+
+        # calculate attention
+        half_resolution = int(self.f.bell_resolution/2)
+        f_segment = self.f([[half_resolution]], self.f.bell_resolution)[0]
+
+        # compare attention to data
+        residuals = 0
+        for (idxs,p) in zip(self.state_excitation_idxs,self.excited_points):
+            array_len = len(p.T_t_use)
+            if len(idxs) == 0:
+                continue
+            new_residuals = 0
+            for idx in idxs:
+                starting_idx = np.max([ 0, half_resolution - idx ] )
+                ending_idx = np.min([ array_len - idx, half_resolution ] )
+                f_segment_eval = f_segment[starting_idx : half_resolution + ending_idx ] # +1 is correct?
+                
+                T_segment_eval = p.T_t_use[idx - half_resolution + starting_idx : idx + ending_idx]
+                coef = np.max(T_segment_eval) - T_segment_eval[0]
+                error = (coef*f_segment_eval + np.full_like(f_segment_eval,T_segment_eval[0])) - T_segment_eval
+                new_residuals += np.mean(error**2)
+            
+            new_residuals /= len(idxs)
+            residuals += new_residuals + self.regularizer * np.linalg.norm(params)
+    
+        return residuals
+
 
 def pointsOnBoundaries_(experiment):
     
@@ -253,7 +322,6 @@ def Fsequence(peak_idxs,lengthscales,array_length,bell_resolution = 101):
     out = np.zeros((array_length,))
     for (peak_idx,lengthscale) in zip(peak_idxs,lengthscales):
 
-        # print(f"DEBUG idx {peak_idx}")
         # form the right half-bell
         input_feature_span = 3*ceil(lengthscale) # how many non 0 elements to expect in the half bell 
         if input_feature_span>bell_resolution/2:
@@ -863,47 +931,44 @@ def batchOptimization(layer_idxs, unique_state_values, points_used_for_training,
         g_parameters_per_building_layer_height = []
         f_parameters_per_building_layer_height = []
         m_parameters_per_building_layer_height = []
-        for (idxs,building_layer_height) in zip( [layer_idxs[-1]], [unique_state_values[-1]]): 
-            # print(f"\tLayer {i}.")
 
-            # update data in points
+        # states = unique_state_values
+        states = np.unique([p.excitation_delay_torch_height_trajectory for p in points_used_for_training])
+        
+        ## find peaks in layer
+        excited_points = [ p for p in points_used_for_training if len(p.input_idxs)>0]
 
-            states = np.unique([p.excitation_delay_torch_height_trajectory for p in points_used_for_training])
-            
-            ## find peaks in layer
-            excited_points = [ p for p in points_used_for_training if len(p.input_idxs)>0]
+        t = time.time()
 
-            t = time.time()
+        theta_F, excitations, param_f0 = learnF( points_used_for_training, states, bounds = bounds_f, regularizer =  F_reg, param_f0 = param_f0)
+        # negative states are not excited. Overwrite the weights for a better fit in the gp.
+        state_0_idx = np.argmin(np.abs(states))
+        theta_F[:state_0_idx] = theta_F[state_0_idx]
 
-            theta_F, excitations, param_f0 = learnF( points_used_for_training, states, bounds = bounds_f, regularizer =  F_reg, param_f0 = param_f0)
-            # negative states are not excited. Overwrite the weights for a better fit in the gp.
-            state_0_idx = np.argmin(np.abs(states))
-            theta_F[:state_0_idx] = theta_F[state_0_idx]
+        lengthscaleModel = halfBellLegthscaleModel( theta_F, states) # underestimate 
 
-            lengthscaleModel = halfBellLegthscaleModel( theta_F, states) # underestimate 
+        # learn G
+        theta_G, param_g0 = learnG( states, excitations, lengthscaleModel, excited_points, bounds = bounds_g, regularizer = G_reg, param_g0 = param_g0)
+        # negative states are not excited. Overwrite the weights for a better fit in the gp.
+        theta_G[:state_0_idx,:] = theta_G[state_0_idx,:]
 
-            # learn G
-            theta_G, param_g0 = learnG( states, excitations, lengthscaleModel, excited_points, bounds = bounds_g, regularizer = G_reg, param_g0 = param_g0)
-            # negative states are not excited. Overwrite the weights for a better fit in the gp.
-            theta_G[:state_0_idx,:] = theta_G[state_0_idx,:]
+        ipCoefModel = modelsForInputCoefs(theta_G, states)
 
-            ipCoefModel = modelsForInputCoefs(theta_G, states)
+        # learn m coupled with G and F
+        xs_train, ys_train, band_state ,section_idxs = formFeatureTargetPairs(on_boundary_,lengthscaleModel,ipCoefModel,points_used_for_training,d_grid=d_grid,HORIZON=1)
 
-            # learn m coupled with G and F
-            xs_train, ys_train, band_state ,section_idxs = formFeatureTargetPairs(on_boundary_,lengthscaleModel,ipCoefModel,points_used_for_training,d_grid=d_grid,HORIZON=1)
+        theta_M, param_m0 = learnM(xs_train,ys_train,m_parameters_per_building_layer_height, bounds = bounds_m, regularizer = M_reg, param_m0 = param_m0)
 
-            theta_M, param_m0 = learnM(xs_train,ys_train,m_parameters_per_building_layer_height, bounds = bounds_m, regularizer = M_reg, param_m0 = param_m0)
+        elapsed = time.time() - t
+        all_training_times_per_state.append(elapsed/len(states))
 
-            elapsed = time.time() - t
-            all_training_times_per_state.append(elapsed/len(states))
+        # negative states are not excited. Overwrite the theta_g for a better fit in the gp.
+        theta_M[:state_0_idx,-1] = theta_M[state_0_idx,-1]
+        # boundaries are only in negative states. Overwrite the theta_g for a better fit in the gp.
+        theta_M[state_0_idx:,2:-1] = theta_M[state_0_idx,2:-1]
 
-            # negative states are not excited. Overwrite the theta_g for a better fit in the gp.
-            theta_M[:state_0_idx,-1] = theta_M[state_0_idx,-1]
-            # boundaries are only in negative states. Overwrite the theta_g for a better fit in the gp.
-            theta_M[state_0_idx:,2:-1] = theta_M[state_0_idx,2:-1]
-
-            f_parameters_per_building_layer_height.append(theta_F)
-            g_parameters_per_building_layer_height.append(theta_G)
-            m_parameters_per_building_layer_height.append(theta_M)
+        f_parameters_per_building_layer_height.append(theta_F)
+        g_parameters_per_building_layer_height.append(theta_G)
+        m_parameters_per_building_layer_height.append(theta_M)
 
     return f_parameters_per_building_layer_height, g_parameters_per_building_layer_height, m_parameters_per_building_layer_height, all_training_times_per_state

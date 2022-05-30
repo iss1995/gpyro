@@ -1,4 +1,4 @@
-import os
+import os,sys
 import warnings
 import numpy as np
 from scipy.optimize import Bounds
@@ -7,8 +7,13 @@ from datetime import datetime
 def config():
         warnings.filterwarnings("ignore")
 
-        PATH_TO_PARENT = "./"
-        FILES_FOLDER = PATH_TO_PARENT+"./Gpyro-TD/" #
+        # check if interactive shell
+        if os.isatty(sys.stdout.fileno()):
+                PATH_TO_PARENT = "./"
+        else:
+                PATH_TO_PARENT = "../"
+
+        FILES_FOLDER = PATH_TO_PARENT+"Gpyro-TD/" #
         POINT_TEMPERATURE_FILES = "temperatures/T*.csv" # no time information on thermal imaging camera
         TRAJECTORY_FILES = "Coordinate_Time/Coordinates_T*.csv"
         POINT_COORDINATES = "Coordinate_Time/point_coordinates.csv"
