@@ -93,27 +93,34 @@ HORIZON = 1
 
 neighbor_list = [p.neighbor_nodes for p in experiment.Points if p._hasNeighbors_()]
 
-g = onopt.gTerm(params = param_g0)
-f = onopt.fTerm(params = param_f0)
-m = onopt.mTerm(neighbors = neighbor_list ,params = param_m0)
-
-
-
 # %%
 # optimize
 ####################################################################################################
 import importlib
 importlib.reload(onopt)
+g = onopt.gTerm(params = param_g0)
+f = onopt.fTerm(params = param_f0)
+m = onopt.mTerm(neighbors = neighbor_list ,params = param_m0)
 
-epochs = 3
+epochs = 1
 underestimate_lengthscales = 0
 all_training_times_per_state = []
+
 param_f0 = np.asarray([1.])
 bounds_f = scipy.optimize.Bounds([0.05],[np.inf])
 
+param_m0 = np.asarray([-.1,-.1,-.1])
+bounds_m = scipy.optimize.Bounds([-np.inf, -np.inf, -np.inf],[0, 0, 0])
+
+param_g0 = np.asarray([0.1,0.1,0.1])
+bounds_g = scipy.optimize.Bounds([-np.inf, -np.inf, -np.inf],[np.inf, np.inf, np.inf])
+
 print("Starting optimization...")
 points_used_for_training = onopt.updatePoints(points_used_for_training,points_used_for_training,layer_idxs[-1])
+N = len(points_used_for_training[0].T_t_use)
+Dt = 0.5
 for epoch in range(epochs):
+    print(f"\tepoch {epoch}")
     g_parameters_per_building_layer_height = []
     f_parameters_per_building_layer_height = []
     m_parameters_per_building_layer_height = []   
@@ -121,35 +128,43 @@ for epoch in range(epochs):
     # find peaks in layer
     excited_points = [ p for p in points_used_for_training if len(p.input_idxs)>0]
 
-    # learn F
-    from scipy.optimize import minimize
+    # optimize F
+    theta_F, excitations, param_f0 = onopt.optimizeF( states, excited_points, f=f, param_f0=param_f0, bounds_f=bounds_f, F_reg = F_reg)
 
-    excitations = []
-    for state_level in states:
-        point_excitations_on_level_map = [] # 1 array for each point telling you which peaks to consider
-        for p in excited_points:
-            point_excitations_on_level_map.append(  p.input_idxs[ p.excitation_delay_torch_height == state_level ] )
+    # negative states are not excited. Overwrite the weights for a better fit in the gp.
+    state_0_idx = np.argmin(np.abs(states))
+    theta_F[:state_0_idx] = theta_F[state_0_idx]
+
+    lengthscaleModel = onopt.halfBellLegthscaleModel( theta_F, states) # underestimate 
+    f.update(theta_F)
+
+    ###########################
+    # learn G and M
+    excitation_array = np.asarray([p.input_idxs for p in points_used_for_training])
+
+    f_seq = np.asarray(f(excitation_array, len(p.T_t_use)))
+    # h_seq = np.asarray([p.excitation_delay_torch_height_trajectory for p in points_used_for_training])
+    # T_seq = np.vstack([p.T_t_use for p in points_used_for_training])
+    # state_seq = np.vstack([p.excitation_delay_torch_height_trajectory for p in points_used_for_training])
     
-        excitations.append( point_excitations_on_level_map )
+    # optimize G
+    theta_G, param_g0 = onopt.optimizeG( f, g, states, excitations, excited_points, param_g0, lengthscaleModel, bounds_g, G_reg = G_reg)
+    ipCoefModel = onopt.modelsForInputCoefs(theta_G, states)
+    # find idxs where all nodes
+    #  
 
-    ## learn the lengthscale
-    parameters_per_state_level = []
-    for i,state_level_idxs in enumerate(excitations):
-        optimizer = onopt.loss_F(state_level_idxs,excited_points, regularizer= F_reg, f = f)
-        res = minimize( optimizer , param_f0, bounds= bounds_f, method= "L-BFGS-B", tol = 1e-12 )
-        param_f0 = res.x
-        parameters_per_state_level.append(res.x[0]) # omit the last one
+    # T0 = np.asarray([p.T_t_use[0] for p in points_used_for_training])
 
-        if i == 0:
-            first_state_param_f0 = res.x
-
-    param_f0 = first_state_param_f0
-
-    ## scale lengthscales
-    lengthscales = 10* np.abs(parameters_per_state_level ) * (1-underestimate_lengthscales)
-
-    ## fit lengthscales that look like the bells you see
-    t = time.time()
+    # timesteps = np.linspace(0,N*Dt,N)
+    
+    # solve adjoint
+    # Dy = onopt.totalModel(f_seq, h_seq, g, m, N = N, params_g = param_g0, params_m = param_m0)
+    # responses = []
+    # T = T0.copy()
+    # for i in range(N):
+    #     responses.append(T)
+    #     T += Dy(i*Dt, T)
+    
 
 # %%
 # optimization

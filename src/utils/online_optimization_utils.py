@@ -1,3 +1,4 @@
+from urllib import response
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -13,10 +14,11 @@ from gpytorch.mlls import SumMarginalLogLikelihood
 from scipy.interpolate import interp1d
 from copy import deepcopy as copy
 from utils.generic_utils import setDevice
-from scipy.optimize import minimize,least_squares
+from scipy.optimize import minimize,least_squares, Bounds
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LinearRegression
 from numpy.linalg import norm
+from scipy.interpolate import interp1d
 
 class gTerm:
     def __init__(self,params = None) -> None:
@@ -27,6 +29,7 @@ class gTerm:
             self.params = np.ones((3,1))
         else:
             self.params = params
+        self.update(self.params)
     
     def __call__(self,h,T):
         """
@@ -37,7 +40,7 @@ class gTerm:
         return np.matmul(regressor,self.params).squeeze() # dim (n,)
     
     def update(self,params):
-        self.params = params
+        self.params = np.atleast_2d(params).T
 
 class mTerm:
     def __init__(self, neighbors, params = None, d_grid = 27, d_grid_norm = 100, delta = None, ambient_T = 0) -> None:
@@ -49,6 +52,8 @@ class mTerm:
             self.params = np.ones((3,1))
         else:
             self.params = params
+        self.update(self.params)
+
         self.neighbors = neighbors
         self.number_of_neighbors = np.asarray([len(neigh) for neigh in neighbors])
         self.d_grid = d_grid / d_grid_norm
@@ -60,19 +65,35 @@ class mTerm:
             self.delta = delta
         
         self.ambient_T = ambient_T
-    
+        
+        # build map between neighbors
+        self.neighbor_Ts = np.zeros((len(neighbors),4)) 
+        self.idx_map = np.full_like(self.neighbor_Ts,-1).astype(np.int64)
+        
+        # create map
+        for i,node_neighbors in enumerate(neighbors):
+            for j,node_neigbor in enumerate(node_neighbors):
+                self.idx_map[i,j] = node_neigbor
+        
+        # which elements are still nan?
+        self.no_connections = self.idx_map < 0
+        self.idx_map[self.no_connections] = 0 
+        
+
     def __call__(self,T):
         """
         @param h : array with heights, dim (n,)
         @param T : array with Temperatures, dim (n,)
         """
-        neighbor_Ts = [[T[i] for i in neighbor] for neighbor in self.neighbors]
-        laplacians = (self.number_of_neighbors*T - np.sum(neighbor_Ts, axis = -1))/(self.d_grid) # dim (n,)
+        # neighbor_Ts = [[T[i] for i in neighbor] for neighbor in self.neighbors]
+        self.neighbor_Ts = T[self.idx_map]
+        self.neighbor_Ts[self.no_connections] = 0 # zero out the non existing connections
+        laplacians = (self.number_of_neighbors*T - np.sum(self.neighbor_Ts, axis = -1))/(self.d_grid) # dim (n,)
         regressor = np.vstack(( T, laplacians, T - self.ambient_T)).T #dim (n,3)
         return np.matmul(regressor,self.params).squeeze() # dim (n,)
     
     def update(self,params):
-        self.params = params
+        self.params = np.atleast_2d(params).T
     
     def updateTambient(self,ambient_T):
         self.ambient_T = ambient_T
@@ -87,11 +108,13 @@ class fTerm:
             self.params = np.ones((1,))
         else:
             self.params = params
+        self.update(self.params)
+
         self.bell_resolution = bell_resolution
     
     def __call__(self,peak_idxs,array_length):
         """
-        @param h : array with heights, dim (n,)
+        @param peak_idxs : list of peaks at each node
         @param T : array with Temperatures, dim (n,)
         """
         out = []
@@ -101,15 +124,74 @@ class fTerm:
     
     def update(self,params):
         self.params = params
-        
 
+class totalModel:
+    def __init__(self, f_seq, h, g: gTerm, m : mTerm, N = -1, params_g = None, params_m = None, Dt = 0.5) -> None:
+        """
+        @param bell_resolution : int with length of peak intervals. If too short, then the peaks won't fit 
+        @param params : array with 1 model parameters
+        @param h : array with heights, dim (n,N)
+        """
+        self.g = g
+        if params_g is None:
+            self.params_g = np.ones((1,))
+        else:
+            self.params_g = params_g
+        self.g.update(params_g)
+        
+        self.m = m
+        if params_m is None:
+            self.params_m = np.ones((1,))
+        else:
+            self.params_m = params_m
+        self.m.update(params_m)
+
+        self.f_seq = f_seq
+        self.h = h
+
+
+        if N == -1 or N>len(self.f_seq):
+            self.N = len(self.f_seq)
+        else:
+            self.N = N
+        
+        self._instantiate_h_int(h,N,Dt)
+        self._instantiate_f_int(f_seq,N,Dt)
+    
+    def __call__(self,t,T):
+        """
+        @param T0 : array with Temperatures, dim (n,)
+        @param N : int with extrapolation Horizon. Cannot be longer than len(f_seq)
+        """
+        h_t = self.h_int(t)
+        f_t = self.f_int(t)
+        DT = (1-f_t) * self.m(T) + f_t * self.g(h_t,T)
+        return DT
+    
+    def updateM(self,params_m):
+        self.params_m = params_m
+        self.m.update(params_m)
+
+    def updateG(self,params_g):
+        self.params_g = params_g
+        self.g.update(params_g)
+
+    def _instantiate_h_int(self,h,N,Dt) -> None:
+        self.h_int = interp1d(np.linspace(0,N*Dt,N),h)
+        return None        
+
+    def _instantiate_f_int(self,f,N,Dt) -> None:
+        self.f_int = interp1d(np.linspace(0,N*Dt,N),f)
+        return None
+        
 class loss_F:
-    def __init__(self, state_excitation_idxs, excited_points, regularizer, f, parameter_scale = 10) -> None:
+    def __init__(self, state_excitation_idxs, excited_points, regularizer, f : fTerm, parameter_scale = 10) -> None:
         self.state_excitation_idxs = state_excitation_idxs 
         self.excited_points = excited_points 
         self.f = f
         self.regularizer = regularizer
         self.parameter_scale = parameter_scale
+
     
     def __call__(self, params):
         # update lengthscale
@@ -146,6 +228,134 @@ class loss_F:
     
         return residuals
 
+class loss_G:
+    def __init__(self, state_excitation_idxs, excited_points, g :gTerm, f:fTerm, lengthscale = 10, regularizer = 1e-2, parameter_scale = 1) -> None:
+       
+        self.state_excitation_idxs = state_excitation_idxs
+        self.g = g 
+        self.f = f
+        f.update(lengthscale)
+        self.lengthscale = lengthscale
+        self.parameter_scale = parameter_scale
+        self.excited_points = excited_points
+        self.regularizer = regularizer
+        # self._calculateFsequences()
+    
+    def __call__(self, params):
+       
+        # update lengthscale
+        self.g.update(params*self.parameter_scale)
+        # calculate attention
+        half_resolution = int(self.f.bell_resolution/2)
+        f_segment = self.f([[half_resolution]], self.f.bell_resolution)[0] # TODO: why different [] from loss_f?
+        
+        # learn g with attention
+        residuals = 0
+        for (idxs,p) in zip(self.state_excitation_idxs,self.excited_points):
+            array_len = len(p.T_t_use)
+            if len(idxs) == 0:
+                continue
+            new_residuals = 0
+            for idx in idxs:
+                starting_idx = np.max([ 0, half_resolution - idx ] )
+                ending_idx = np.min([ array_len - idx, half_resolution ] )
+
+                f_segment_eval = f_segment[starting_idx : half_resolution + ending_idx ] # +1 is correct?
+                T_segment_eval = p.T_t_use[idx - half_resolution + starting_idx : idx + ending_idx]
+                h_segment_eval = p.excitation_delay_torch_height_trajectory[idx - half_resolution + starting_idx : idx + ending_idx]
+
+                # unroll f
+                response = T_segment_eval[0]
+                history = [response]
+                for (f_s, h_s) in zip( f_segment_eval, h_segment_eval):
+                    response += f_s * self.g(h_s, response)
+                    history.append(response)
+                # coef = np.max(T_segment_eval) - T_segment_eval[0]
+                error = np.asarray(history[:-1]) + np.full_like(f_segment_eval,T_segment_eval[0]) - T_segment_eval
+                new_residuals += np.mean(error**2)
+            
+            new_residuals /= len(idxs)
+            residuals += new_residuals + self.regularizer * np.linalg.norm(params)
+    
+        return residuals
+    
+    def _calculateFsequences(self) -> None:
+        excitation_array = np.asarray([p.input_idxs for p in self.excited_points])
+        self.f_seq = np.asarray(self.f(excitation_array,len(excitation_array)))[:,self.state_level_idxs]
+        return None
+
+def optimizeF( states, excited_points,  param_f0, bounds_f : Bounds, f : fTerm, F_reg = 1e-2, underestimate_lengthscales = 0):
+    #  learn F
+    excitations = []
+    for state_level in states:
+        point_excitations_on_level_map = [] # 1 array for each point telling you which peaks to consider
+        for p in excited_points:
+            point_excitations_on_level_map.append(  p.input_idxs[ p.excitation_delay_torch_height == state_level ] )
+    
+        excitations.append( point_excitations_on_level_map )
+
+    ## learn the lengthscale
+    parameters_per_state_level = []
+    for i,state_level_idxs in enumerate(excitations):
+        optimizer = loss_F(state_level_idxs,excited_points, regularizer= F_reg, f = f)
+        res = minimize( optimizer , param_f0, bounds= bounds_f, method= "L-BFGS-B", tol = 1e-12 )
+        param_f0 = res.x
+        parameters_per_state_level.append(res.x[0]) # omit the last one
+
+        if i == 0:
+            first_state_param_f0 = res.x
+
+    param_f0 = first_state_param_f0
+
+    ## scale lengthscales
+    lengthscales = 10* np.abs(parameters_per_state_level ) * (1-underestimate_lengthscales)
+    # return lengthscales, excitations, param_f0 
+    ###########################
+    return lengthscales, excitations, param_f0
+
+def optimizeG( f : fTerm, g : gTerm, states, excitations, excited_points, param_g0, lengthscaleModel : interp1d, bounds : Bounds, G_reg = 1e-2):
+    
+    #  learn G
+    ## learn the lengthscale
+    parameters_per_state_level = []
+    for i,(state_level_idxs,state) in enumerate(zip(excitations,states)):
+        lengthscale = lengthscaleModel(state)
+        optimizer = loss_G(state_level_idxs, excited_points, g, f, regularizer = G_reg, lengthscale = lengthscale)
+        res = minimize( optimizer , param_g0, bounds= bounds, method= "L-BFGS-B", tol = 1e-12 )
+        param_g0 = res.x
+        parameters_per_state_level.append(res.x) # omit the last one
+
+        if i == 0:
+            first_state_param_g0 = res.x
+
+    param_g0 = first_state_param_g0
+    coefficients = np.asarray(parameters_per_state_level)
+    return coefficients, param_g0
+
+def learnG( states, excitations, lengthscaleModel, excited_points, bounds, regularizer, param_g0):
+
+    parameters_per_height_level = []
+    # param_g0 = np.ones((7))*0.1
+    for i,(height_lvl,height_level_idxs) in enumerate(zip(states,excitations)):
+
+        height_lengthscale = lengthscaleModel(height_lvl)
+        optimizer = optimizeFandG(height_level_idxs,excited_points,height_lengthscale,regularizer = regularizer)
+        # optimizer = ifu.optimizeLayerInputParameters(height_level_idxs,excited_points,height_lengthscale,regularizer = G_reg)
+        res = minimize( optimizer , param_g0, bounds= bounds, method= "L-BFGS-B", tol = 1e-12 )
+        G_param = res.x[:-1] # omit the last one
+        parameters_per_height_level.append(res.x[:-1])
+        param_g0 = res.x
+        if i == 0:
+            first_state_param_g0 = res.x
+
+    param_g0 = first_state_param_g0
+    # if np.any(states<0):
+    #     neg_states = states[states<0]
+    #     for neg_state in neg_states:
+    #         parameters_per_height_level.insert(0,parameters_per_height_level[0])
+    coefficients = np.asarray(parameters_per_height_level)[:,:5]
+
+    return coefficients, param_g0
 
 def pointsOnBoundaries_(experiment):
     
@@ -319,11 +529,12 @@ def G(a,b,c,d,e,F,h,T,T_start = None):
 
 def Fsequence(peak_idxs,lengthscales,array_length,bell_resolution = 101):
 
+    lengthscales = np.atleast_1d(lengthscales)
     out = np.zeros((array_length,))
     for (peak_idx,lengthscale) in zip(peak_idxs,lengthscales):
-
+        assert peak_idx<array_length, "peak index larger than the array length"
         # form the right half-bell
-        input_feature_span = 3*ceil(lengthscale) # how many non 0 elements to expect in the half bell 
+        input_feature_span = 3*np.ceil(lengthscale).astype(np.int64) # how many non 0 elements to expect in the half bell 
         if input_feature_span>bell_resolution/2:
             bell_resolution = 2*input_feature_span
         bell_top_idx = int(bell_resolution/2) + 1 # where the bell top is
@@ -612,31 +823,6 @@ def learnF( excited_points, states,  bounds, regularizer, param_f0, underestimat
     lengthscales = 10* np.abs( [x[4] for x in parameters_per_state_level] ) * (1-underestimate_lengthscales)
     
     return lengthscales, excitations, param_f0
-
-def learnG( states, excitations, lengthscaleModel, excited_points, bounds, regularizer, param_g0):
-
-    parameters_per_height_level = []
-    # param_g0 = np.ones((7))*0.1
-    for i,(height_lvl,height_level_idxs) in enumerate(zip(states,excitations)):
-
-        height_lengthscale = lengthscaleModel(height_lvl)
-        optimizer = optimizeFandG(height_level_idxs,excited_points,height_lengthscale,regularizer = regularizer)
-        # optimizer = ifu.optimizeLayerInputParameters(height_level_idxs,excited_points,height_lengthscale,regularizer = G_reg)
-        res = minimize( optimizer , param_g0, bounds= bounds, method= "L-BFGS-B", tol = 1e-12 )
-        G_param = res.x[:-1] # omit the last one
-        parameters_per_height_level.append(res.x[:-1])
-        param_g0 = res.x
-        if i == 0:
-            first_state_param_g0 = res.x
-
-    param_g0 = first_state_param_g0
-    # if np.any(states<0):
-    #     neg_states = states[states<0]
-    #     for neg_state in neg_states:
-    #         parameters_per_height_level.insert(0,parameters_per_height_level[0])
-    coefficients = np.asarray(parameters_per_height_level)[:,:5]
-
-    return coefficients, param_g0
 
 def formFeatureTargetPairs(on_boundary_, lengthscaleModel,ipCoefModel,points_updated_online,d_grid=27,HORIZON=1):
     ## form features
