@@ -107,13 +107,16 @@ underestimate_lengthscales = 0
 all_training_times_per_state = []
 
 param_f0 = np.asarray([1.])
-bounds_f = scipy.optimize.Bounds([0.05],[np.inf])
+# bounds_f = scipy.optimize.Bounds([0.05],[np.inf])
+bounds_f = ([0.05],[np.inf])
 
 param_m0 = np.asarray([-.1,-.1,-.1])
-bounds_m = scipy.optimize.Bounds([-np.inf, -np.inf, -np.inf],[0, 0, 0])
+# bounds_m = scipy.optimize.Bounds([-np.inf, -np.inf, -np.inf],[0, 0, 0])
+bounds_m = ([-np.inf, -np.inf, -np.inf],[0, 0, 0])
 
 param_g0 = np.asarray([0.1,0.1,0.1])
-bounds_g = scipy.optimize.Bounds([-np.inf, -np.inf, -np.inf],[np.inf, np.inf, np.inf])
+# bounds_g = scipy.optimize.Bounds([-np.inf, -np.inf, -np.inf],[np.inf, np.inf, np.inf])
+bounds_g = ([-np.inf, -np.inf, -np.inf],[np.inf, np.inf, np.inf])
 
 print("Starting optimization...")
 points_used_for_training = onopt.updatePoints(points_used_for_training,points_used_for_training,layer_idxs[-1])
@@ -129,7 +132,7 @@ for epoch in range(epochs):
     excited_points = [ p for p in points_used_for_training if len(p.input_idxs)>0]
 
     # optimize F
-    theta_F, excitations, param_f0 = onopt.optimizeF( states, excited_points, f=f, param_f0=param_f0, bounds_f=bounds_f, F_reg = F_reg)
+    theta_F, excitations, param_f0 = onopt.optimizeF( states, excited_points, f=f, param_f0=param_f0, bounds=bounds_f, F_reg = F_reg)
 
     # negative states are not excited. Overwrite the weights for a better fit in the gp.
     state_0_idx = np.argmin(np.abs(states))
@@ -164,7 +167,14 @@ for epoch in range(epochs):
     # for i in range(N):
     #     responses.append(T)
     #     T += Dy(i*Dt, T)
-    
+#%%
+# Try M optimization
+# 
+import importlib
+importlib.reload(onopt)
+
+theta_M, param_M0 = onopt.optimizeM( m,f, g, states, points_used_for_training, param_m0 = param_m0,gCoefModel = ipCoefModel, lengthscaleModel = lengthscaleModel, bounds = bounds_m, M_reg = M_reg)    
+
 
 # %%
 # optimization

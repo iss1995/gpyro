@@ -21,6 +21,11 @@ def rolling_window(a, window):
         strides = a.strides + (a.strides[0],) # but when the other fails this works
     return np.lib.stride_tricks.as_strided(a, shape=shape, strides=strides) 
 
+def rolling_window_2D(a, shape):  # rolling window for 2D array
+    s = (a.shape[0] - shape[0] + 1,) + (a.shape[1] - shape[1] + 1,) + shape
+    strides = a.strides + a.strides
+    return np.lib.stride_tricks.as_strided(a, shape=s, strides=strides)
+
 def moving_average(x, w):
     extended = np.pad(x,(int(w/2),int(w/2)-1),'edge')
     return np.convolve(extended, np.ones(w), 'valid') / w
