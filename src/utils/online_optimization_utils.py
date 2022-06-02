@@ -97,6 +97,23 @@ class mTerm:
     
     def updateTambient(self,ambient_T):
         self.ambient_T = ambient_T
+    
+    def calculateLaplacians(self,T):
+        """
+        for training
+        """
+        T = np.atleast_2d(T)
+        neighbor_Ts = T[self.idx_map,:]
+        neighbor_Ts[self.no_connections,:] = 0 # zero out the non existing connections
+        laplacians = (np.multiply(self.number_of_neighbors,T.T).T - np.sum(neighbor_Ts, axis = 1))/(self.d_grid) # dim (n,N)
+        return laplacians
+    
+    def oneStepPropagation(self,T,laplacians):
+        """
+        for training
+        """
+        regressor = np.vstack(( T, laplacians, T - self.ambient_T)).T #dim (N,3)
+        return np.matmul(regressor,self.params).squeeze() # dim (N,)
 
 class fTerm:
     def __init__(self, bell_resolution = 101, params = None) -> None:
@@ -318,15 +335,16 @@ class loss_M:
 
         if self.N == 1:
             # TODO : current implementation of M propagates system by one timestep and accepts a thermal field as input. Rethink of how to implement 
-            preds = (1-self.f_seq[self.train_idxs])*self.m(self.x[self.train_idxs]) + params[-1]*self.g(self.h[self.train_idxs],self.x[self.train_idxs])
-            error = self.y[:,self.train_idxs] - preds
+            m_val = self.m.oneStepPropagation(self.x,self.laplacians)
+            preds = (1-self.f_seq[self.train_idxs])*m_val[self.train_idxs] + params[-1]*self.g(self.h[self.train_idxs],self.x[self.train_idxs])
+            error = self.y[self.train_idxs] - preds
 
-            test = (1-self.f_seq[:,self.test_idxs])*self.m(self.x[:,self.test_idxs]) + params[-1]*self.g(self.h[:,self.test_idxs],self.x[:,self.test_idxs])
+            test = (1-self.f_seq[self.test_idxs])*m_val[self.test_idxs] + params[-1]*self.g(self.h[self.test_idxs],self.x[self.test_idxs])
 
-            test_error = self.y[:,self.test_idxs] - test
+            test_error = self.y[self.test_idxs] - test
 
-            loss = objective(error,self.y[:,self.train_idxs]) + regFun(params[:-1,self.regularizer])
-            test_loss = objective(test_error,self.y[:,self.test_idxs])
+            loss = objective(error,self.y[self.train_idxs]) + regFun(params[:-1],self.regularizer)
+            test_loss = objective(test_error,self.y[self.test_idxs])
         else:
             assert 1, "N>1 not implemented."
 
@@ -337,13 +355,18 @@ class loss_M:
         return loss 
     
     def _createFeatureTargets(self,test_size,random_state) -> None:
-        temperatures = [p.T_t_use[idxs[0:-1]] for (p,idxs) in zip(self.training_points,self.state_level_idxs)]
+        all_temperatures = np.vstack([p.T_t_use for p in self.training_points])
+        all_laplacians = self.m.calculateLaplacians(all_temperatures)
+
+        temperatures = [p.T_t_use[idxs[:-1]] for (p,idxs) in zip(self.training_points,self.state_level_idxs)]
+        laplacians = [lap[idxs[:-1]] for (lap,idxs) in zip( all_laplacians, self.state_level_idxs)]
         delta_temperatures = [np.diff(p.T_t_use[idxs]) for (p,idxs) in zip(self.training_points,self.state_level_idxs)]
-        heights = [p.excitation_delay_torch_height_trajectory[idxs[0:-1]] for (p,idxs) in zip(self.training_points,self.state_level_idxs)]
+        heights = [p.excitation_delay_torch_height_trajectory[idxs[:-1]] for (p,idxs) in zip(self.training_points,self.state_level_idxs)]
         excitation_idxs = [p.input_idxs for p in self.training_points]
 
         if self.N == 1:
             self.x = np.hstack(temperatures )
+            self.laplacians = np.hstack(laplacians)
             self.y = np.hstack(delta_temperatures )
             self.h = np.hstack(heights)
             f_seq = []
@@ -1220,7 +1243,7 @@ def onlineOptimization(layer_idxs, unique_state_values, points_used_for_training
 
     return f_parameters_per_building_layer_height, g_parameters_per_building_layer_height, m_parameters_per_building_layer_height, all_training_times_per_state
  
-def batchOptimization(layer_idxs, unique_state_values, points_used_for_training, bounds_f, bounds_g, bounds_m, F_reg, G_reg, M_reg, param_f0, param_g0, param_m0, on_boundary_, d_grid, epochs = 3 ):
+def batchOptimization_(layer_idxs, unique_state_values, points_used_for_training, bounds_f, bounds_g, bounds_m, F_reg, G_reg, M_reg, param_f0, param_g0, param_m0, on_boundary_, d_grid, epochs = 3 ):
     """
     Feed data coming from all layers at once.
     """
@@ -1274,4 +1297,48 @@ def batchOptimization(layer_idxs, unique_state_values, points_used_for_training,
         g_parameters_per_building_layer_height.append(theta_G)
         m_parameters_per_building_layer_height.append(theta_M)
 
+    return f_parameters_per_building_layer_height, g_parameters_per_building_layer_height, m_parameters_per_building_layer_height, all_training_times_per_state
+
+def batchOptimization(states, points_used_for_training, m : mTerm, f : fTerm, g : gTerm, param_m0 : np.ndarray, param_f0 : np.ndarray, param_g0 : np.ndarray, bounds_m : tuple, bounds_f : tuple, bounds_g : tuple, M_reg : int, F_reg : int, G_reg : int, epochs = 2, verbose = True, noise_magnitude = 0.1):
+
+    excited_points = [ p for p in points_used_for_training if len(p.input_idxs)>0]
+    g_parameters_per_building_layer_height = []
+    f_parameters_per_building_layer_height = []
+    m_parameters_per_building_layer_height = []
+    all_training_times_per_state = []
+    for epoch in range(epochs):
+        if verbose:
+            print(f"epoch {epoch}")
+
+        t = time.time()
+        # optimize F
+        theta_F, excitations, param_f0 = optimizeF( states, excited_points, f=f, param_f0=param_f0, bounds=bounds_f, F_reg = F_reg)
+
+        # negative states are not excited. Overwrite the weights for a better fit in the gp.
+        state_0_idx = np.argmin(np.abs(states))
+        theta_F[:state_0_idx] = theta_F[state_0_idx]
+
+        lengthscaleModel = halfBellLegthscaleModel( theta_F, states) # underestimate 
+        f.update(theta_F)
+        
+        # optimize G
+        theta_G, param_g0 = optimizeG( f, g, states, excitations, excited_points, param_g0, lengthscaleModel, bounds_g, G_reg = G_reg)
+        ipCoefModel = modelsForInputCoefs(theta_G, states)
+        
+        # optimize M
+        theta_M, param_m0 = optimizeM( m,f, g, states, points_used_for_training, param_m0 = param_m0,gCoefModel = ipCoefModel, lengthscaleModel = lengthscaleModel, bounds = bounds_m, M_reg = M_reg)
+
+        elapsed = time.time() - t
+        
+        # assign weight values found
+        f_parameters_per_building_layer_height.append(theta_F)
+        g_parameters_per_building_layer_height.append(theta_G)
+        m_parameters_per_building_layer_height.append(theta_M)
+        all_training_times_per_state.append(elapsed/len(states))
+
+        # inject noise to initial parameters for next epoch
+        param_f0 += noise_magnitude*param_f0*np.random.rand(len(param_f0))
+        param_g0 += noise_magnitude*param_g0*np.random.rand(len(param_g0))
+        param_m0 += noise_magnitude*param_m0*np.random.rand(len(param_m0))
+    
     return f_parameters_per_building_layer_height, g_parameters_per_building_layer_height, m_parameters_per_building_layer_height, all_training_times_per_state

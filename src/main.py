@@ -34,6 +34,7 @@ def executeMain(hyperparameters,save_plots_ = False):
 # def main(save_plots_ = False):
 # preprocess training data and create scaler
 ###############################################################################################
+save_plots_ = True
 print("Post-processing...")
 FILES_FOLDER,POINT_TEMPERATURE_FILES,POINT_COORDINATES,TRAJECTORY_FILES,RESULTS_FOLDER,RESULTS_FOLDER_GP,RESULTS_FOLDER_MODEL,d_grid,bounds_f,F_reg,bounds_g,G_reg,bounds_m,M_reg,output_scale,length_mean,length_var,param_f0,param_g0,param_m0 = config.config()
 prc = preprocessor.preProcessor(FILES_FOLDER,POINT_TEMPERATURE_FILES,POINT_COORDINATES,TRAJECTORY_FILES,RESULTS_FOLDER,subsample = 5)
@@ -96,65 +97,67 @@ neighbor_list = [p.neighbor_nodes for p in experiment.Points if p._hasNeighbors_
 # %%
 # optimize
 ####################################################################################################
-import importlib
-importlib.reload(onopt)
-g = onopt.gTerm(params = param_g0)
-f = onopt.fTerm(params = param_f0)
-m = onopt.mTerm(neighbors = neighbor_list ,params = param_m0)
+# import importlib
+# importlib.reload(onopt)
+# g = onopt.gTerm(params = param_g0)
+# f = onopt.fTerm(params = param_f0)
+# m = onopt.mTerm(neighbors = neighbor_list ,params = param_m0)
 
-epochs = 1
-underestimate_lengthscales = 0
-all_training_times_per_state = []
+# epochs = 1
+# underestimate_lengthscales = 0
+# all_training_times_per_state = []
 
-param_f0 = np.asarray([1.])
-# bounds_f = scipy.optimize.Bounds([0.05],[np.inf])
-bounds_f = ([0.05],[np.inf])
+# param_f0 = np.asarray([1.])
+# # bounds_f = scipy.optimize.Bounds([0.05],[np.inf])
+# bounds_f = ([0.05],[np.inf])
 
-param_m0 = np.asarray([-.1,-.1,-.1])
-# bounds_m = scipy.optimize.Bounds([-np.inf, -np.inf, -np.inf],[0, 0, 0])
-bounds_m = ([-np.inf, -np.inf, -np.inf],[0, 0, 0])
+# param_m0 = np.asarray([-.1,-.1,-.1, 1])
+# # bounds_m = scipy.optimize.Bounds([-np.inf, -np.inf, -np.inf],[0, 0, 0])
+# bounds_m = ([-np.inf, -np.inf, -np.inf, 0],[0, 0, 0, np.inf])
 
-param_g0 = np.asarray([0.1,0.1,0.1])
-# bounds_g = scipy.optimize.Bounds([-np.inf, -np.inf, -np.inf],[np.inf, np.inf, np.inf])
-bounds_g = ([-np.inf, -np.inf, -np.inf],[np.inf, np.inf, np.inf])
+# param_g0 = np.asarray([0.1,0.1,0.1])
+# # bounds_g = scipy.optimize.Bounds([-np.inf, -np.inf, -np.inf],[np.inf, np.inf, np.inf])
+# bounds_g = ([-np.inf, -np.inf, -np.inf],[np.inf, np.inf, np.inf])
 
-print("Starting optimization...")
-points_used_for_training = onopt.updatePoints(points_used_for_training,points_used_for_training,layer_idxs[-1])
-N = len(points_used_for_training[0].T_t_use)
-Dt = 0.5
-for epoch in range(epochs):
-    print(f"\tepoch {epoch}")
-    g_parameters_per_building_layer_height = []
-    f_parameters_per_building_layer_height = []
-    m_parameters_per_building_layer_height = []   
+# print("Starting optimization...")
+# points_used_for_training = onopt.updatePoints(points_used_for_training,points_used_for_training,layer_idxs[-1])
+# N = len(points_used_for_training[0].T_t_use)
+# Dt = 0.5
+# for epoch in range(epochs):
+#     print(f"\tepoch {epoch}")
+#     g_parameters_per_building_layer_height = []
+#     f_parameters_per_building_layer_height = []
+#     m_parameters_per_building_layer_height = []   
     
-    # find peaks in layer
-    excited_points = [ p for p in points_used_for_training if len(p.input_idxs)>0]
+#     # find peaks in layer
+#     excited_points = [ p for p in points_used_for_training if len(p.input_idxs)>0]
 
-    # optimize F
-    theta_F, excitations, param_f0 = onopt.optimizeF( states, excited_points, f=f, param_f0=param_f0, bounds=bounds_f, F_reg = F_reg)
+#     # optimize F
+#     theta_F, excitations, param_f0 = onopt.optimizeF( states, excited_points, f=f, param_f0=param_f0, bounds=bounds_f, F_reg = F_reg)
 
-    # negative states are not excited. Overwrite the weights for a better fit in the gp.
-    state_0_idx = np.argmin(np.abs(states))
-    theta_F[:state_0_idx] = theta_F[state_0_idx]
+#     # negative states are not excited. Overwrite the weights for a better fit in the gp.
+#     state_0_idx = np.argmin(np.abs(states))
+#     theta_F[:state_0_idx] = theta_F[state_0_idx]
 
-    lengthscaleModel = onopt.halfBellLegthscaleModel( theta_F, states) # underestimate 
-    f.update(theta_F)
+#     lengthscaleModel = onopt.halfBellLegthscaleModel( theta_F, states) # underestimate 
+#     f.update(theta_F)
+    
+#     # optimize G
+#     theta_G, param_g0 = onopt.optimizeG( f, g, states, excitations, excited_points, param_g0, lengthscaleModel, bounds_g, G_reg = G_reg)
+#     ipCoefModel = onopt.modelsForInputCoefs(theta_G, states)
+    
+#     # optimize M
+#     theta_M, param_M0 = onopt.optimizeM( m,f, g, states, points_used_for_training, param_m0 = param_m0,gCoefModel = ipCoefModel, lengthscaleModel = lengthscaleModel, bounds = bounds_m, M_reg = M_reg) 
 
-    ###########################
-    # learn G and M
-    excitation_array = np.asarray([p.input_idxs for p in points_used_for_training])
+    ###########################################################################
+    # extrapolation
+    
+    # excitation_array = np.asarray([p.input_idxs for p in points_used_for_training])
 
-    f_seq = np.asarray(f(excitation_array, len(p.T_t_use)))
+    # f_seq = np.asarray(f(excitation_array, len(p.T_t_use)))
     # h_seq = np.asarray([p.excitation_delay_torch_height_trajectory for p in points_used_for_training])
     # T_seq = np.vstack([p.T_t_use for p in points_used_for_training])
     # state_seq = np.vstack([p.excitation_delay_torch_height_trajectory for p in points_used_for_training])
-    
-    # optimize G
-    theta_G, param_g0 = onopt.optimizeG( f, g, states, excitations, excited_points, param_g0, lengthscaleModel, bounds_g, G_reg = G_reg)
-    ipCoefModel = onopt.modelsForInputCoefs(theta_G, states)
-    # find idxs where all nodes
-    #  
 
     # T0 = np.asarray([p.T_t_use[0] for p in points_used_for_training])
 
@@ -167,18 +170,32 @@ for epoch in range(epochs):
     # for i in range(N):
     #     responses.append(T)
     #     T += Dy(i*Dt, T)
-#%%
-# Try M optimization
-# 
-import importlib
-importlib.reload(onopt)
-
-theta_M, param_M0 = onopt.optimizeM( m,f, g, states, points_used_for_training, param_m0 = param_m0,gCoefModel = ipCoefModel, lengthscaleModel = lengthscaleModel, bounds = bounds_m, M_reg = M_reg)    
-
+    ###########################################################################
 
 # %%
 # optimization
 ####################################################################################################
+# import importlib
+# importlib.reload(onopt)
+g = onopt.gTerm(params = param_g0)
+f = onopt.fTerm(params = param_f0)
+m = onopt.mTerm(neighbors = neighbor_list ,params = param_m0)
+
+epochs = 1
+underestimate_lengthscales = 0
+all_training_times_per_state = []
+
+param_f0 = np.asarray([1.])
+# bounds_f = scipy.optimize.Bounds([0.05],[np.inf])
+bounds_f = ([0.05],[np.inf])
+
+param_m0 = np.asarray([-.1,-.1,-.1, 1])
+# bounds_m = scipy.optimize.Bounds([-np.inf, -np.inf, -np.inf],[0, 0, 0])
+bounds_m = ([-np.inf, -np.inf, -np.inf, 0],[0, 0, 0, np.inf])
+
+param_g0 = np.asarray([0.1,0.1,0.1])
+# bounds_g = scipy.optimize.Bounds([-np.inf, -np.inf, -np.inf],[np.inf, np.inf, np.inf])
+bounds_g = ([-np.inf, -np.inf, -np.inf],[np.inf, np.inf, np.inf])
 kwargs = {"bounds_f":bounds_f, 
         "bounds_g":bounds_g, 
         "bounds_m":bounds_m, 
@@ -187,11 +204,9 @@ kwargs = {"bounds_f":bounds_f,
         "M_reg": M_reg,
         "param_f0": param_f0,
         "param_g0": param_g0,
-        "param_m0": param_m0,
-        "on_boundary_": on_boundary_,
-        "d_grid": d_grid}
+        "param_m0": param_m0}
 # f_parameters_per_building_layer_height, g_parameters_per_building_layer_height, m_parameters_per_building_layer_height, all_training_times_per_state = onopt.onlineOptimization(layer_idxs, states, points_used_for_training, **kwargs )
-f_parameters_per_building_layer_height, g_parameters_per_building_layer_height, m_parameters_per_building_layer_height, all_training_times_per_state = onopt.batchOptimization(layer_idxs, states, points_used_for_training, **kwargs )
+f_parameters_per_building_layer_height, g_parameters_per_building_layer_height, m_parameters_per_building_layer_height, all_training_times_per_state = onopt.batchOptimization(states, points_used_for_training, m , f, g, **kwargs )
 
 print(f"Mean Training time per state {np.mean(all_training_times_per_state)}")
 # %%
@@ -376,7 +391,7 @@ if save_plots_:
 
 T_Mean_error = np.mean(all_mean_dtw_distances) * 100
 print(f"\nDTW mean relative error: {T_Mean_error}%")
-return T_Mean_error
+# return T_Mean_error
 
 
 # %%
