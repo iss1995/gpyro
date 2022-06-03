@@ -1,4 +1,5 @@
 from urllib import response
+from cv2 import sepFilter2D
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -18,7 +19,7 @@ from scipy.optimize import minimize,least_squares, Bounds
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LinearRegression
 from numpy.linalg import norm
-from scipy.interpolate import interp1d
+from scipy.interpolate import interp1d, interp2d
 
 class gTerm:
     def __init__(self,params = None) -> None:
@@ -37,7 +38,11 @@ class gTerm:
         @param T : array with Temperatures, dim (n,)
         """
         regressor = np.vstack(( np.ones_like(h), 1-h, 1-T)).T #dim (n,3)
-        return np.matmul(regressor,self.params).squeeze() # dim (n,)
+        if len(self.params)>3:
+            out = np.sum(regressor*self.params, axis = -1).squeeze() # dim (n,)
+        else:
+            out = np.matmul(regressor,self.params).squeeze()
+        return out
     
     def update(self,params):
         self.params = np.atleast_2d(params).T
@@ -89,8 +94,13 @@ class mTerm:
         self.neighbor_Ts = T[self.idx_map]
         self.neighbor_Ts[self.no_connections] = 0 # zero out the non existing connections
         laplacians = (self.number_of_neighbors*T - np.sum(self.neighbor_Ts, axis = -1))/(self.d_grid) # dim (n,)
-        regressor = np.vstack(( T, laplacians, T - self.ambient_T)).T #dim (n,3)
-        return np.matmul(regressor,self.params).squeeze() # dim (n,)
+        regressor = np.vstack(( T, laplacians, (T - self.ambient_T)*self.delta)).T #dim (n,3)
+        if len(self.params)>3:
+            out = np.sum(regressor*self.params, axis = -1).squeeze() # dim (n,)
+        else:
+            out = np.matmul(regressor,self.params).squeeze()
+        
+        return out
     
     def update(self,params):
         self.params = np.atleast_2d(params).T
@@ -108,11 +118,11 @@ class mTerm:
         laplacians = (np.multiply(self.number_of_neighbors,T.T).T - np.sum(neighbor_Ts, axis = 1))/(self.d_grid) # dim (n,N)
         return laplacians
     
-    def oneStepPropagation(self,T,laplacians):
+    def oneStepPropagation(self,T,laplacians,deltas):
         """
         for training
         """
-        regressor = np.vstack(( T, laplacians, T - self.ambient_T)).T #dim (N,3)
+        regressor = np.vstack(( T, laplacians, (T - self.ambient_T)*deltas)).T #dim (N,3)
         return np.matmul(regressor,self.params).squeeze() # dim (N,)
 
 class fTerm:
@@ -129,51 +139,64 @@ class fTerm:
 
         self.bell_resolution = bell_resolution
     
-    def __call__(self,peak_idxs,array_length):
+    def __call__(self,peak_idxs,array_length, multiple_params = False):
         """
         @param peak_idxs : list of peaks at each node
         @param T : array with Temperatures, dim (n,)
         """
         out = []
-        for node_peaks in peak_idxs:
-            out.append( Fsequence( node_peaks, self.params, array_length, bell_resolution = self.bell_resolution) )
+        if not multiple_params:
+            params = np.full(len(peak_idxs), self.params)
+        else:
+            params = self.params
+
+        for (node_peaks,param) in zip(peak_idxs,params):
+            out.append( Fsequence( node_peaks, param, array_length, bell_resolution = self.bell_resolution) )
         return out
     
     def update(self,params):
         self.params = params
 
 class totalModel:
-    def __init__(self, f_seq, h, g: gTerm, m : mTerm, N = -1, params_g = None, params_m = None, Dt = 0.5) -> None:
+    def __init__(self, f_seq, h, g: gTerm, m : mTerm, N = -1, theta_g = None, theta_m = None, theta_p = None,Dt = 0.5) -> None:
         """
         @param bell_resolution : int with length of peak intervals. If too short, then the peaks won't fit 
-        @param params : array with 1 model parameters
+        @param theta : arrays with parameter sequences model parameters
         @param h : array with heights, dim (n,N)
         """
-        self.g = g
-        if params_g is None:
-            self.params_g = np.ones((1,))
-        else:
-            self.params_g = params_g
-        self.g.update(params_g)
-        
-        self.m = m
-        if params_m is None:
-            self.params_m = np.ones((1,))
-        else:
-            self.params_m = params_m
-        self.m.update(params_m)
 
-        self.f_seq = f_seq
-        self.h = h
-
-
-        if N == -1 or N>len(self.f_seq):
-            self.N = len(self.f_seq)
+        if N == -1 or N>len(f_seq):
+            self.N = len(f_seq[0])
         else:
             self.N = N
         
-        self._instantiate_h_int(h,N,Dt)
-        self._instantiate_f_int(f_seq,N,Dt)
+        self.g = g
+        if theta_g is None:
+            self.theta_g = np.ones((N,3))
+        else:
+            self.theta_g = theta_g
+        self.g.update(theta_g)
+        
+        self.m = m
+        if theta_m is None:
+            self.theta_m = np.ones((N,3))
+        else:
+            self.theta_m = theta_m
+        self.m.update(theta_m)
+        
+        if theta_p is None:
+            self.theta_p = np.ones((N,1))
+        else:
+            self.theta_p = theta_p
+
+        self.f_seq = f_seq
+        self.h = h
+        
+        self._instantiate_h_int(h,self.N,Dt)
+        self._instantiate_f_int(f_seq,self.N,Dt)
+        self._instantiate_theta_m_int(theta_m,self.N,Dt)
+        self._instantiate_theta_g_int(theta_g,self.N,Dt)
+        self._instantiate_theta_p_int(theta_p,self.N,Dt)
     
     def __call__(self,t,T):
         """
@@ -182,23 +205,43 @@ class totalModel:
         """
         h_t = self.h_int(t)
         f_t = self.f_int(t)
-        DT = (1-f_t) * self.m(T) + f_t * self.g(h_t,T)
-        return DT
-    
-    def updateM(self,params_m):
-        self.params_m = params_m
-        self.m.update(params_m)
+        
+        theta_M = self.theta_m_int(t)
+        theta_G = self.theta_g_int(t)
+        theta_p = self.theta_p_int(t)
 
-    def updateG(self,params_g):
-        self.params_g = params_g
-        self.g.update(params_g)
+        self.updateM(theta_M)
+        self.updateG(theta_G)
+
+        DT = (1-f_t) * self.m(T) + theta_p * f_t * self.g(h_t,T)
+        return DT + T
+    
+    def updateM(self,theta_m):
+        self.theta_m = theta_m
+        self.m.update(theta_m)
+
+    def updateG(self,theta_g):
+        self.theta_g = theta_g
+        self.g.update(theta_g)
 
     def _instantiate_h_int(self,h,N,Dt) -> None:
-        self.h_int = interp1d(np.linspace(0,N*Dt,N),h)
+        self.h_int = interp1d(np.linspace(0,N*Dt-Dt,N),h)
         return None        
 
     def _instantiate_f_int(self,f,N,Dt) -> None:
-        self.f_int = interp1d(np.linspace(0,N*Dt,N),f)
+        self.f_int = interp1d(np.linspace(0,N*Dt-Dt,N),f)
+        return None
+
+    def _instantiate_theta_m_int(self,theta_m,N,Dt) -> None:
+        self.theta_m_int = interp1d(np.linspace(0,N*Dt-Dt,N),theta_m, axis = 1)
+        return None
+
+    def _instantiate_theta_g_int(self,theta_g,N,Dt) -> None:
+        self.theta_g_int = interp1d(np.linspace(0,N*Dt-Dt,N),theta_g, axis = 1)
+        return None
+
+    def _instantiate_theta_p_int(self,theta_p,N,Dt) -> None:
+        self.theta_p_int = interp1d(np.linspace(0,N*Dt-Dt,N),theta_p)
         return None
         
 class loss_F:
@@ -335,7 +378,7 @@ class loss_M:
 
         if self.N == 1:
             # TODO : current implementation of M propagates system by one timestep and accepts a thermal field as input. Rethink of how to implement 
-            m_val = self.m.oneStepPropagation(self.x,self.laplacians)
+            m_val = self.m.oneStepPropagation( self.x, self.laplacians, self.deltas)
             preds = (1-self.f_seq[self.train_idxs])*m_val[self.train_idxs] + params[-1]*self.g(self.h[self.train_idxs],self.x[self.train_idxs])
             error = self.y[self.train_idxs] - preds
 
@@ -359,6 +402,8 @@ class loss_M:
         all_laplacians = self.m.calculateLaplacians(all_temperatures)
 
         temperatures = [p.T_t_use[idxs[:-1]] for (p,idxs) in zip(self.training_points,self.state_level_idxs)]
+        delta_map = self.m.delta
+        deltas = [np.ones_like(temp)*delta_val for (temp,delta_val) in zip(temperatures,delta_map)]
         laplacians = [lap[idxs[:-1]] for (lap,idxs) in zip( all_laplacians, self.state_level_idxs)]
         delta_temperatures = [np.diff(p.T_t_use[idxs]) for (p,idxs) in zip(self.training_points,self.state_level_idxs)]
         heights = [p.excitation_delay_torch_height_trajectory[idxs[:-1]] for (p,idxs) in zip(self.training_points,self.state_level_idxs)]
@@ -369,6 +414,7 @@ class loss_M:
             self.laplacians = np.hstack(laplacians)
             self.y = np.hstack(delta_temperatures )
             self.h = np.hstack(heights)
+            self.deltas = np.hstack(deltas)
             f_seq = []
             length = len(self.training_points[0].T_t_use)
             for (idxs, excite) in zip(self.state_level_idxs,excitation_idxs):

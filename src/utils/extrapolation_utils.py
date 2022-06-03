@@ -13,7 +13,7 @@ import time
 
 from dtw import *
 
-def prepareExtrapolation(validation_experiment, points_used_for_validation, delay_model, likelihoods, gp_models, GP_scaler, device = None, mean_model = True, samples = 100):
+def prepareExtrapolation(validation_experiment, points_used_for_validation, delay_model, likelihoods, gp_models, GP_scaler, f, device = None, mean_model = True, samples = 100):
 
     device = setDevice(device)
     n = len(likelihoods.likelihoods)
@@ -44,7 +44,7 @@ def prepareExtrapolation(validation_experiment, points_used_for_validation, dela
     if samples == 1:
         infered_coefs_np = infered_coefs_np.squeeze()
         weights_interpolator = interplWeights(unique_states,models_numbering,infered_coefs_np.T)
-        coefficients, input_coefficients, F_sequences, all_excitation_heights, T_ambient = calculatePathValues(points_used_for_validation, delay_model, weights_interpolator, models_numbering, validation_experiment)
+        coefficients, F_sequences, all_excitation_heights, T_ambient = calculatePathValues(points_used_for_validation, delay_model, weights_interpolator, models_numbering, validation_experiment, f)
 
 
     else:
@@ -55,35 +55,34 @@ def prepareExtrapolation(validation_experiment, points_used_for_validation, dela
         T_ambient_rep = []
         for coefficient_samples in infered_coefs_np:
             weights_interpolator = interplWeights(unique_states,models_numbering,coefficient_samples)
-            coefficients_samp, input_coefficients_samp, F_sequences_samp, all_excitation_heights_samp, T_ambient_samp = calculatePathValues(points_used_for_validation, delay_model, weights_interpolator, models_numbering, validation_experiment)        
+            coefficients_samp, F_sequences_samp, all_excitation_heights_samp, T_ambient_samp = calculatePathValues(points_used_for_validation, delay_model, weights_interpolator, models_numbering, validation_experiment, f)        
 
             coefficients_rep.append(coefficients_samp)
-            input_coefficients_rep.append(input_coefficients_samp)
             F_sequences_rep.append(F_sequences_samp)
             all_excitation_heights_rep.append(all_excitation_heights_samp)
             T_ambient_rep.append(T_ambient_samp)
         
         coefficients = np.stack(coefficients_rep,axis=0)
-        input_coefficients = np.stack(input_coefficients_rep,axis=0)
         F_sequences = np.stack(F_sequences_rep,axis=0)
         all_excitation_heights = np.stack(all_excitation_heights_rep,axis=0)
         T_ambient = np.stack(T_ambient_rep,axis=0)
 
-    return coefficients, input_coefficients, F_sequences, all_excitation_heights, T_ambient
+    return coefficients, F_sequences, all_excitation_heights, T_ambient
 
 def interplWeights(unique_states,model_number,weight_values):
     return interp2d(unique_states,model_number,weight_values.T)
 
-def calculatePathValues(points_used_for_validation, delay_model,weights_interpolator, models_arange, validation_experiment):
+def calculatePathValues(points_used_for_validation, delay_model, weights_interpolator, models_arange, validation_experiment, f : onopt.fTerm):
     Fsequence_repository = []
-    input_starting_idxs_repository = []
     excited_nodes_ = []
     coefficient_repository = []
-    input_model_coefficient_repository = []
     excitation_heights_repository = []
+    all_lengthscales = []
+    all_peak_idxs = []
+    array_length = 0
     for p in points_used_for_validation:
 
-        array_length = np.max(p.T_t_use.shape)
+        array_length = np.max([np.max(p.T_t_use.shape),array_length])
         excitation_heights = p.excitation_delay_torch_height_trajectory
         excitation_heights_repository.append(excitation_heights)
 
@@ -116,9 +115,13 @@ def calculatePathValues(points_used_for_validation, delay_model,weights_interpol
         else :
             lengthscales_for_point_input = np.array([])
 
+        all_lengthscales.append(lengthscales_for_point_input)
+        all_peak_idxs.append(observed_peak_indexes)
         ## sequence F_sequences calculating inputs
         # print(f"DEBUG node {p.node}")
-        Fsequence_repository.append(onopt.Fsequence(observed_peak_indexes,lengthscales_for_point_input,array_length,bell_resolution = 100))
+        # Fsequence_repository.append(onopt.Fsequence(observed_peak_indexes,lengthscales_for_point_input,array_length,bell_resolution = 100))
+        # f.update(lengthscales_for_point_input)
+        # Fsequence_repository.append( f( observed_peak_indexes, array_length=len(infered_coefs_np) ))
         # if len(p.excitation_idxs)>0:
         #     debugFsec(observed_peak_indexes,lengthscales_for_point_input,array_length,p)
 
@@ -128,13 +131,15 @@ def calculatePathValues(points_used_for_validation, delay_model,weights_interpol
         else:
             excited_nodes_.append(False)
 
-    coefficients = np.stack(coefficient_repository, axis=2)[:5,:,:] # 0 -> var, 1 -> sample, 2-> point
-    input_coefficients = np.stack(coefficient_repository, axis=2)[5:10,:,:] # 0 -> var, 1 -> sample, 2-> point
+    f.update(all_lengthscales)
+    Fsequence_repository = f(all_peak_idxs,array_length=array_length,multiple_params=True)
+
+    coefficients = np.stack(coefficient_repository, axis=2) # 0 -> var, 1 -> sample, 2-> point
     F_sequences = np.vstack(Fsequence_repository) # 2-> point, 1 -> sample
     all_excitation_heights = np.vstack(excitation_heights_repository) # 0 -> sample, 1-> point
     T_ambient = validation_experiment.T_ambient[::validation_experiment.subsample]
 
-    return coefficients, input_coefficients, F_sequences, all_excitation_heights, T_ambient
+    return coefficients, F_sequences, all_excitation_heights, T_ambient
 
 def synchronizeWithDtwwrapper(ins):
     (validation_experiment, T_state_np,  starting_idx, steps, node) =ins
@@ -143,7 +148,7 @@ def synchronizeWithDtwwrapper(ins):
 
     return normalized_distance, std_step_cost_increase, min_step_cost_increase, max_step_cost_increase
 
-def probabilisticPredictionsWrapper(validation_experiment, likelihoods, gp_models, GP_scaler , starting_idx = 300, steps = 4000, samples = 100, messages = False, mean_model = False, device = "cpu", scaler = None, delay_model = None, process_validation_experiment = True):
+def probabilisticPredictionsWrapper(validation_experiment, m, g, f, likelihoods, gp_models, GP_scaler , starting_idx = 300, steps = 4000, samples = 100, messages = False, mean_model = False, device = "cpu", scaler = None, delay_model = None, process_validation_experiment = True, dt = 0.5):
 
     # pre-process experiment: interpolate torch path, scale measurements, subsample, and find times that torch crosses each node
     if process_validation_experiment:
@@ -165,19 +170,20 @@ def probabilisticPredictionsWrapper(validation_experiment, likelihoods, gp_model
     delta_1 = np.zeros_like(delta_0)
 
     # draw different weights and extrapolate with them
-    extrapolations, all_elapsed = propabilisticExtrapolation( validation_experiment, points_used_for_validation, delay_model, likelihoods, gp_models, GP_scaler, mean_model, samples, device, messages, starting_idx, steps, delta_0, delta_1)
+    extrapolations, all_elapsed = propabilisticExtrapolation( validation_experiment, points_used_for_validation, delay_model, m, g, f, likelihoods, gp_models, GP_scaler, mean_model, samples, device, messages, starting_idx, steps, dt = dt )
     
     return extrapolations,validation_experiment,all_elapsed
 
-def propabilisticExtrapolation( validation_experiment, points_used_for_validation, delay_model, likelihoods, gp_models, GP_scaler, mean_model, samples, device, messages, starting_idx, steps, delta_0, delta_1):
+def propabilisticExtrapolation( validation_experiment, points_used_for_validation, delay_model, m, g, f, likelihoods, gp_models, GP_scaler, mean_model, samples, device, messages, starting_idx, steps, dt = 0.5):
     # draw different weights and extrapolate with them
     extrapolations = []
     ## prepare extrapolation
-    coefficients_samp, input_coefficients_samp, F_sequences_samp, all_excitation_heights_samp, T_ambient_samp = prepareExtrapolation(validation_experiment = validation_experiment, 
+    coefficients_samp, F_sequences_samp, all_excitation_heights_samp, T_ambient_samp = prepareExtrapolation(validation_experiment = validation_experiment, 
     points_used_for_validation = points_used_for_validation, 
     delay_model = delay_model,
     likelihoods = likelihoods, 
     gp_models = gp_models, 
+    f = f,
     GP_scaler = GP_scaler,
     mean_model = mean_model, 
     samples=samples, 
@@ -186,9 +192,9 @@ def propabilisticExtrapolation( validation_experiment, points_used_for_validatio
     all_elaspsed = []
     if mean_model:
         samples = 1
-        coefficients_samp, input_coefficients_samp, F_sequences_samp, all_excitation_heights_samp, T_ambient_samp = [coefficients_samp], [input_coefficients_samp], [F_sequences_samp], [all_excitation_heights_samp], [T_ambient_samp]
+        coefficients_samp, F_sequences_samp, all_excitation_heights_samp, T_ambient_samp = [coefficients_samp], [F_sequences_samp], [all_excitation_heights_samp], [T_ambient_samp]
     
-    for i,(coefficients, input_coefficients, F_sequences, all_excitation_heights, T_ambient) in enumerate(zip(coefficients_samp, input_coefficients_samp, F_sequences_samp, all_excitation_heights_samp, T_ambient_samp)):
+    for i,(coefficients, F_sequences, all_excitation_heights, T_ambient) in enumerate(zip(coefficients_samp, F_sequences_samp, all_excitation_heights_samp, T_ambient_samp)):
         if messages:
             print(f"Sampe {i+1}/{samples}")
 
@@ -197,35 +203,47 @@ def propabilisticExtrapolation( validation_experiment, points_used_for_validatio
         T_dot_last = []
         T_state.append( np.hstack([ p.T_t_use[starting_idx] for p in validation_experiment.Points ]) )
 
-        tmp = []
-        for p in points_used_for_validation:
-            tmp.append(p.T_t_use[starting_idx])
-            if starting_idx>0:
-                T_dot_last.append( p.T_t_use[starting_idx] - p.T_t_use[starting_idx-1] )
-            else:
-                T_dot_last.append( np.asarray([0]) )
+        # tmp = []
+        # for p in points_used_for_validation:
+        #     tmp.append(p.T_t_use[starting_idx])
+        #     if starting_idx>0:
+        #         T_dot_last.append( p.T_t_use[starting_idx] - p.T_t_use[starting_idx-1] )
+        #     else:
+        #         T_dot_last.append( np.asarray([0]) )
 
-        T_state.append( np.hstack(tmp) )
+        # T_state.append( np.hstack(tmp) )
+
+        # total model propagation
+        theta_M = coefficients[:3,:]
+        theta_P = coefficients[3,:].T
+        theta_G = coefficients[4:7,:]
+        model = onopt.totalModel(F_sequences, all_excitation_heights, m = m, g = g, theta_g = theta_G, theta_m = theta_M, theta_p = theta_P)
+
+        timesteps = np.arange(starting_idx,starting_idx+steps)*dt
+        for t in timesteps:
+            T_state.append( model(t,T_state[-1]))
+
+        T_state_np = np.asarray(T_state)
 
         ## quick state propagation function
-        neighbor_list = [p.neighbor_nodes for p in validation_experiment.Points if p._hasNeighbors_()]
-        statePropagation = quickStatePropagationWithActivation(neighbor_list, delta_0, delta_1)
+        # neighbor_list = [p.neighbor_nodes for p in validation_experiment.Points if p._hasNeighbors_()]
+        # statePropagation = quickStatePropagationWithActivation(neighbor_list, delta_0, delta_1)
 
-        T_state_0 = T_state[-1]
+        # T_state_0 = T_state[-1]
         
         t = time.time()
         
-        T_state_np, _ = extrapolate(
-        statePropagation = statePropagation,
-        coefficients = coefficients,
-        input_coefficients = input_coefficients,
-        all_excitation_heights = all_excitation_heights,
-        Fsequence = F_sequences,
-        T_ambient = T_ambient,
-        T_state_0 = T_state_0,
-        starting_idx = starting_idx,
-        num_of_steps = steps,
-        )
+        #TODO change to integrate the new stuff
+        # T_state_np, _ = extrapolate(
+        # statePropagation = statePropagation,
+        # coefficients = coefficients,
+        # all_excitation_heights = all_excitation_heights,
+        # Fsequence = F_sequences,
+        # T_ambient = T_ambient,
+        # T_state_0 = T_state_0,
+        # starting_idx = starting_idx,
+        # num_of_steps = steps,
+        # )
         
         elapsed = time.time() - t
         all_elaspsed.append(elapsed)
