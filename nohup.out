@@ -1,0 +1,112 @@
+
+Post-processing...
+[32m[I 2022-06-04 21:30:26,560][0m A new study created in memory with name: no-name-f96d4de6-384a-463f-b4ed-df97c9a3eb3b[0m
+Running 200 trials...
+no-name-f96d4de6-384a-463f-b4ed-df97c9a3eb3b
+epoch 0
+epoch 1
+Mean Training time per state 0.6179731000553479
+T20
+T19
+T17
+[33m[W 2022-06-04 21:32:15,181][0m Trial 0 failed, because the objective function returned nan.[0m
+In (5.521977270853728e-05, 0.1446396995064603, 0.0020177249939808536, 3.019479411615901, 0.01170410638334238, 0.009890347952587412):
+
+epoch 0
+epoch 1
+Mean Training time per state 0.6203809109601108
+T3
+Process ForkPoolWorker-21:
+Traceback (most recent call last):
+  File "/home/iss/anaconda3/envs/ThermalImaging3090/lib/python3.8/site-packages/multiprocessing_on_dill/process.py", line 254, in _bootstrap
+    self.run()
+  File "/home/iss/anaconda3/envs/ThermalImaging3090/lib/python3.8/site-packages/multiprocessing_on_dill/process.py", line 93, in run
+    self._target(*self._args, **self._kwargs)
+  File "/home/iss/anaconda3/envs/ThermalImaging3090/lib/python3.8/site-packages/multiprocessing_on_dill/pool.py", line 108, in worker
+    task = get()
+  File "/home/iss/anaconda3/envs/ThermalImaging3090/lib/python3.8/site-packages/multiprocessing_on_dill/queues.py", line 345, in get
+    return ForkingPickler.loads(res)
+  File "/home/iss/anaconda3/envs/ThermalImaging3090/lib/python3.8/site-packages/dill/_dill.py", line 387, in loads
+    return load(file, ignore, **kwds)
+  File "/home/iss/anaconda3/envs/ThermalImaging3090/lib/python3.8/site-packages/dill/_dill.py", line 373, in load
+    return Unpickler(file, ignore=ignore, **kwds).load()
+  File "/home/iss/anaconda3/envs/ThermalImaging3090/lib/python3.8/site-packages/dill/_dill.py", line 646, in load
+    obj = StockUnpickler.load(self)
+KeyError: 41857
+T13
+T14
+T20
+T12
+T10
+T7
+T6
+T25
+T8
+T26
+T9
+T11
+T15
+T16
+T17
+T19
+T18
+T5
+T24
+T2
+T23
+T4
+T22
+Post-processing...
+[32m[I 2022-06-04 21:37:45,500][0m A new study created in memory with name: no-name-ce79ecd3-30f2-47b5-b69d-049dffcdabc7[0m
+Running 200 trials...
+no-name-ce79ecd3-30f2-47b5-b69d-049dffcdabc7
+epoch 0
+epoch 1
+Mean Training time per state 0.6571983098983765
+[33m[W 2022-06-04 21:38:44,240][0m Trial 0 failed, because the objective function returned nan.[0m
+In (0.008344082367452828, 0.00013666571911465553, 0.7381995005886123, 0.16064366286858658, 0.14942857973898654, 0.009769867113261412):
+
+epoch 0
+epoch 1
+Mean Training time per state 0.43440578200600366
+[33m[W 2022-06-04 21:39:40,123][0m Trial 1 failed, because the objective function returned nan.[0m
+In (0.0033849870291725558, 0.025280058832048518, 6.278800713024511e-06, 6.924194544422251, 0.16076640102999692, 0.006933177710479746):
+
+epoch 0
+epoch 1
+Mean Training time per state 0.6210503036325628
+[33m[W 2022-06-04 21:40:41,029][0m Trial 2 failed, because the objective function returned nan.[0m
+In (0.33153433411485106, 0.011665035930829156, 0.0002656697684413032, 2.8045484442192405, 0.0038817765935748, 0.0637852336532973):
+
+epoch 0
+epoch 1
+Mean Training time per state 0.6863879832354458
+[33m[W 2022-06-04 21:41:47,108][0m Trial 3 failed, because the objective function returned nan.[0m
+In (1.2794457875633347e-06, 1.6146497229641523e-06, 8.05848517958008e-06, 0.16952688482045514, 0.007600703873533801, 0.009774273167093771):
+
+epoch 0
+epoch 1
+Mean Training time per state 0.641440825028853
+[33m[W 2022-06-04 21:42:44,576][0m Trial 4 failed, because the objective function returned nan.[0m
+In (0.009454957223214006, 0.0011506115151062107, 6.169251219205044e-06, 0.19524505454230545, 0.43726770446095947, 0.012293170096658953):
+
+epoch 0
+epoch 1
+Mean Training time per state 0.6427873156287454
+Process ForkPoolWorker-109:
+Traceback (most recent call last):
+  File "/home/iss/anaconda3/envs/ThermalImaging3090/lib/python3.8/site-packages/multiprocessing_on_dill/process.py", line 254, in _bootstrap
+    self.run()
+  File "/home/iss/anaconda3/envs/ThermalImaging3090/lib/python3.8/site-packages/multiprocessing_on_dill/process.py", line 93, in run
+    self._target(*self._args, **self._kwargs)
+  File "/home/iss/anaconda3/envs/ThermalImaging3090/lib/python3.8/site-packages/multiprocessing_on_dill/pool.py", line 108, in worker
+    task = get()
+  File "/home/iss/anaconda3/envs/ThermalImaging3090/lib/python3.8/site-packages/multiprocessing_on_dill/queues.py", line 345, in get
+    return ForkingPickler.loads(res)
+  File "/home/iss/anaconda3/envs/ThermalImaging3090/lib/python3.8/site-packages/dill/_dill.py", line 387, in loads
+    return load(file, ignore, **kwds)
+  File "/home/iss/anaconda3/envs/ThermalImaging3090/lib/python3.8/site-packages/dill/_dill.py", line 373, in load
+    return Unpickler(file, ignore=ignore, **kwds).load()
+  File "/home/iss/anaconda3/envs/ThermalImaging3090/lib/python3.8/site-packages/dill/_dill.py", line 646, in load
+    obj = StockUnpickler.load(self)
+_pickle.UnpicklingError: invalid load key, '\x9c'.

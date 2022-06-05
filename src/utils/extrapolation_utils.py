@@ -2,6 +2,7 @@
 import numpy as np
 import utils.generic_utils as gnu
 import utils.online_optimization_utils as onopt
+import utils.visualizations as vis
 
 from copy import deepcopy as copy
 from utils.generic_utils import setDevice
@@ -438,3 +439,96 @@ def unscale(responses,scaler):
         unscaled_responses_data[i,:] = scaler.inverse_transform(to_scaler).T[0,:]
 
     return unscaled_responses_data.T
+
+def eval( in_ ):
+    m, g, f, file_to_evaluate, validation_experiment, likelihoods, models, GP_weights_normalizers, prc, delay_model , save_plots_ , RESULTS_FOLDER  , starting_point , steps  = in_
+    print(file_to_evaluate)
+    file = file_to_evaluate
+    all_extrapolation_times = []
+
+    ## for prediction with neighbors' mean temps    
+    mean_extrapolation,validation_experiment,all_elapsed_times = probabilisticPredictionsWrapper(copy(validation_experiment), m, g, f, likelihoods, models, GP_weights_normalizers , starting_idx = 300, steps = 4000, samples = 1, messages = False, mean_model=True, device = "cpu", scaler = copy(prc.scaler), delay_model = delay_model)
+    mean_extrapolation = mean_extrapolation[0]
+
+    if save_plots_:
+        sampled_extrapolations,*_ = probabilisticPredictionsWrapper(copy(validation_experiment), m, g, f, likelihoods, models, GP_weights_normalizers , starting_idx = 300, steps = 4000, samples = 100, messages = False, scaler = copy(prc.scaler), delay_model = delay_model, process_validation_experiment = False)
+
+        stacked_sampled_extrapolations = np.stack(sampled_extrapolations,axis=0)
+        std_sampled_extrapolations = np.std(stacked_sampled_extrapolations,axis = 0)
+
+        ub = mean_extrapolation + 3*std_sampled_extrapolations
+        lb = mean_extrapolation - 3*std_sampled_extrapolations
+
+    T_state_nominal = np.asarray( [p.T_t_use[starting_point:starting_point+steps+1] for p in validation_experiment.Points if p._hasNeighbors_()] ).T
+
+    unscaled_responses = unscale(mean_extrapolation,prc.scaler)
+    unscaled_targets = unscale(T_state_nominal,prc.scaler)
+    if save_plots_:
+        ub_unscaled = unscale(ub,prc.scaler)
+        lb_unscaled = unscale(lb,prc.scaler)
+    timestamps = np.linspace(starting_point, starting_point + len(unscaled_targets),len(unscaled_targets))*0.5
+
+    if len(unscaled_targets)<len(unscaled_responses):
+        unscaled_responses = unscaled_responses[:len(unscaled_targets),:]
+        ub_unscaled = ub_unscaled[:len(unscaled_targets),:]
+        lb_unscaled = lb_unscaled[:len(unscaled_targets),:]
+        timestamps = timestamps[:len(unscaled_targets)]
+
+
+    central_plate_points = [p for p in validation_experiment.Points if len(p.neighbor_nodes)==4]
+    T_idxs_to_keep = [True if len(p.neighbor_nodes)==4 else False for p in validation_experiment.Points]
+    T_idxs_to_keep = np.asarray(T_idxs_to_keep)
+
+    ins = []
+    all_mean_T_distances = np.zeros((len(central_plate_points),))
+    nodes_to_plot = [p.node for p in central_plate_points]
+
+    for node in nodes_to_plot:
+        # if you don't plot them one by one prepare the inputs for doing that in parallel
+        ins.append( (copy(validation_experiment), mean_extrapolation, starting_point, steps, node) )
+
+    # run in parallel the plotting fun
+    # results = []
+    # with mp.Pool( processes = np.min( [2 , len(nodes_to_plot) ]) ) as pool:
+    #     # mean_T_distances = pool.map( tempExtrapolationPlot, ins )
+    #     results = pool.map( synchronizeWithDtwwrapper, ins )
+
+    # These distances are the DTW distances of each roll out. So they are already time-averaged
+    # for i,(in_i,result) in enumerate(zip(ins,results)):
+    # for i,in_i in enumerate(ins):
+    #     result = synchronizeWithDtwwrapper(in_i)
+    #     (*_, node)  = in_i
+    #     distance_i, distance_std, distance_min, distance_max = result
+    #     all_mean_T_distances[i] = distance_i
+    
+    all_mean_T_distances = np.abs(mean_extrapolation[:,T_idxs_to_keep] - T_state_nominal[:,T_idxs_to_keep])
+    mean_dtw_rel_error = np.mean(all_mean_T_distances) # spatial average of mean Distance in timeseries of nodes
+
+    # write performance
+    time_elapsed = np.mean(all_elapsed_times)
+    all_extrapolation_times.append(time_elapsed)
+
+    if save_plots_:
+        if file == "T26":
+            vis.plotNodeUncertainEvolution( unscaled_responses[:,nodes_to_plot], lb_unscaled[:,nodes_to_plot], ub_unscaled[:,nodes_to_plot], timestamps, unscaled_targets[:,nodes_to_plot], RESULTS_FOLDER ,file )
+            # vis.plotNodeEvolution( unscaled_responses, timestamps, unscaled_targets, RESULTS_FOLDER ,file )
+
+            step_to_plot = [1825]
+            point_locations = np.vstack([p.coordinates for p in central_plate_points]).T
+            max_T = max( np.max( unscaled_responses[step_to_plot,:] ), np.max( unscaled_targets[step_to_plot,:] ) )
+            min_T = min( np.min( unscaled_responses[step_to_plot,:] ), np.min( unscaled_targets[step_to_plot,:] ) )
+            colorbar_scaling = np.array([max_T, min_T])
+
+            vis.plotContour2(unscaled_responses[:,T_idxs_to_keep],point_locations,np.array(step_to_plot),d_grid = 27, result_folder = RESULTS_FOLDER, field_value_name_id = "CoarseTemperature_"+ file, colorbar_scaling = colorbar_scaling)
+            vis.plotContour2(unscaled_targets[:,T_idxs_to_keep],point_locations,np.array(step_to_plot),d_grid = 27, result_folder = RESULTS_FOLDER, field_value_name_id = "CoarseNominalTemperature_"+ file, colorbar_scaling = colorbar_scaling)
+
+    return mean_dtw_rel_error
+
+def safe_eval(ins):
+    try:
+        out = eval(ins)
+    except Exception as e:
+        print(e)
+        out = np.NaN
+    
+    return out
