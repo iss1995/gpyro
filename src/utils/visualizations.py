@@ -484,3 +484,7 @@ def plotContour2(field_value,point_locations,steps_to_plot = None,d_grid = 27, r
         plt.savefig(destination_folder + "/" + field_value_name_id + f"_contour2_step_{step}.pdf", bbox_inches = 'tight' , dpi = 120)
         plt.savefig(destination_folder + "/" + field_value_name_id + f"_contour2_step_{step}.svg", bbox_inches = 'tight' , dpi = 120)
         plt.close()
+
+if __name__ == "__main__":
+    
+    dummy = 1

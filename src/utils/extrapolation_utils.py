@@ -181,7 +181,7 @@ starting_idx = 300, steps = 4000, samples = 100, messages = False, mean_model = 
 
 def propabilisticExtrapolation( validation_experiment : _Experiment, points_used_for_validation : list, delay_model : LinearRegression, m : mTerm, g : gTerm, f : fTerm, 
     likelihoods : gpytorch.likelihoods.LikelihoodList, gp_models : gpytorch.models.IndependentModelList, GP_scaler : torch.Tensor, mean_model : bool, samples : int, 
-    device = None , messages = False, starting_idx = 300, steps = 4000, dt = 0.5, processes = None):
+    device = None , messages = False, starting_idx = 300, steps = 4000, dt = 0.5, processes : int or None = None, pool : mp.Pool or None = None):
     # draw different weights and extrapolate with them
     extrapolations = []
     ## prepare extrapolation
@@ -210,10 +210,13 @@ def propabilisticExtrapolation( validation_experiment : _Experiment, points_used
     if mean_model or processes == 1:
         extrapolations = [unrollPathsWrapper(ins[0])]
     else:
-        if processes is None:
-            processes = np.min([len(ins), mp.cpu_count()-1])
-        with mp.Pool(processes) as pool:
-            extrapolations = pool.map(unrollPathsWrapper,ins)    
+        if pool is None:
+            if processes is None:
+                processes = np.min([len(ins), mp.cpu_count()-1])
+            with mp.Pool(processes) as pool:
+                extrapolations = pool.map(unrollPathsWrapper,ins)    
+        else:
+            extrapolations = pool.map(unrollPathsWrapper,ins)
 
     elapsed = time.time() - t
     all_elaspsed.append(elapsed/len(coefficients_samp))
@@ -554,3 +557,7 @@ def safe_eval(*ins):
         out = np.NaN
     
     return out
+
+if __name__ == "__main__":
+    
+    dummy = 1

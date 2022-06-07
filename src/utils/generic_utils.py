@@ -183,3 +183,7 @@ def _isOnCorner_(p,boundaries):
     else:
         corner_ = False
     return corner_
+
+if __name__ == "__main__":
+    
+    dummy = 1

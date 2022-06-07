@@ -1418,3 +1418,7 @@ def batchOptimization(states, points_used_for_training, m : mTerm, f : fTerm, g 
         param_m0 += noise_magnitude*param_m0*np.random.rand(len(param_m0))
     
     return f_parameters_per_building_layer_height, g_parameters_per_building_layer_height, m_parameters_per_building_layer_height, all_training_times_per_state
+
+if __name__ == "__main__":
+    
+    dummy = 1

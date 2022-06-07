@@ -1,28 +1,19 @@
 # %%
 import numpy as np
-import pandas as pd
 import multiprocessing_on_dill as mp
 
-import scipy
 import data_processing._config as config
 import data_processing.preprocessor as preprocessor
 # from pathos.pools import ParallelPool as Pool
 
-import torch
-import csv
-import pickle
-import time
 import warnings
 import optuna
-import matplotlib.pyplot as plt
 
 import utils.online_optimization_utils as onopt
 import utils.extrapolation_utils as exu
-import utils.visualizations as vis
 
 from scipy.signal import butter, filtfilt
 from copy import deepcopy as copy
-from math import ceil
 
 def executeMain(hyperparameters,kwargs,save_plots_ = False):
     try:
@@ -138,7 +129,7 @@ def main(N = 100,save_plots_ = False):
     print("Best value: {} (params: {})\n".format(study.best_value, study.best_params))
 
     fig = optuna.visualization.plot_contour(study)
-    plt.savefig(f"{study.study_name}.pdf")
+    fig.savefig(f"{study.study_name}.pdf")
 
     return None
 
@@ -206,7 +197,8 @@ def evaluate_hyperparamters( hyperparameters, bounds_f, bounds_g, bounds_m, para
                     "training_iter": max_training_iter,
                     "loss_thress":thress,
                     "no_improvement_thress": 50,
-                    "gp_model_to_load":gp_model_to_load}
+                    "gp_model_to_load":gp_model_to_load,
+                    "_device" : "cpu"}
 
     # run optimization or load specified model
     models, likelihoods, gp_data = onopt.GPOpt(copy(models),copy(likelihoods),**gp_opt_kwargs)
@@ -228,11 +220,12 @@ def evaluate_hyperparamters( hyperparameters, bounds_f, bounds_g, bounds_m, para
     validation_experiments = [prc.experiments[experiment_to_use] for experiment_to_use in experiment_range]
     all_mean_dtw_distances = []
 
-    number_of_concurrent_processes = mp.cpu_count() - 1
+    number_of_concurrent_processes = 12
     all_mean_dtw_distances = []
-    with mp.Pool(number_of_concurrent_processes) as pool:
-        for (validation_experiment, file_id) in zip(validation_experiments,files_to_evaluate):    
-            all_mean_dtw_distances.append( exu.safe_eval(m, g, f, file_id, validation_experiment, likelihoods, models, GP_weights_normalizers, prc, delay_model , save_plots_ , RESULTS_FOLDER  , starting_point , steps, number_of_concurrent_processes, pool ))
+    # with mp.Pool(number_of_concurrent_processes) as pool:
+    pool = None
+    for (validation_experiment, file_id) in zip(validation_experiments,files_to_evaluate):    
+        all_mean_dtw_distances.append( exu.safe_eval(m, g, f, file_id, validation_experiment, likelihoods, models, GP_weights_normalizers, prc, delay_model , save_plots_ , RESULTS_FOLDER  , starting_point , steps, number_of_concurrent_processes, pool ))
 
     all_mean_dtw_distances = np.asarray(all_mean_dtw_distances)
     failed_idxs = np.isnan(all_mean_dtw_distances)
