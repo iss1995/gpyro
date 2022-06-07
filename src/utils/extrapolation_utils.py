@@ -1,9 +1,14 @@
 
+from statistics import LinearRegression, linear_regression
 import numpy as np
+import sklearn
+from data_processing.preprocessor import preProcessor
+from utils.online_optimization_utils import fTerm, gTerm, mTerm
 import utils.generic_utils as gnu
 import utils.online_optimization_utils as onopt
 import utils.visualizations as vis
-
+import multiprocessing_on_dill as mp
+from data_processing._Experiment import _Experiment
 from copy import deepcopy as copy
 from utils.generic_utils import setDevice
 from scipy.interpolate import interp2d 
@@ -14,7 +19,8 @@ import time
 
 from dtw import *
 
-def prepareExtrapolation(validation_experiment, points_used_for_validation, delay_model, likelihoods, gp_models, GP_scaler, f, device = None, mean_model = True, samples = 100):
+def prepareExtrapolation(validation_experiment : _Experiment, points_used_for_validation : list, delay_model : LinearRegression, likelihoods : gpytorch.likelihoods.LikelihoodList, 
+    gp_models : gpytorch.models.IndependentModelList, GP_scaler : torch.Tensor, f : fTerm, device = None, mean_model = True, samples = 100):
 
     device = setDevice(device)
     n = len(likelihoods.likelihoods)
@@ -149,7 +155,8 @@ def synchronizeWithDtwwrapper(ins):
 
     return normalized_distance, std_step_cost_increase, min_step_cost_increase, max_step_cost_increase
 
-def probabilisticPredictionsWrapper(validation_experiment, m, g, f, likelihoods, gp_models, GP_scaler , starting_idx = 300, steps = 4000, samples = 100, messages = False, mean_model = False, device = "cpu", scaler = None, delay_model = None, process_validation_experiment = True, dt = 0.5):
+def probabilisticPredictionsWrapper(validation_experiment : _Experiment, m : mTerm, g : gTerm, f : fTerm, likelihoods : gpytorch.likelihoods.LikelihoodList, gp_models : gpytorch.models.IndependentModelList, GP_scaler : torch.Tensor, 
+starting_idx = 300, steps = 4000, samples = 100, messages = False, mean_model = False, device = "cpu", scaler = None, delay_model = None, process_validation_experiment = True, dt = 0.5, number_of_concurrent_processes = None):
 
     # pre-process experiment: interpolate torch path, scale measurements, subsample, and find times that torch crosses each node
     if process_validation_experiment:
@@ -164,18 +171,17 @@ def probabilisticPredictionsWrapper(validation_experiment, m, g, f, likelihoods,
         steps = len(validation_experiment.Points[0].T_t_use) - starting_idx - 1    
 
     # extract inputs
-    n = len(likelihoods.likelihoods)
     points_used_for_validation = [ p for p in validation_experiment.Points if p._hasNeighbors_()]
-    boundaries_ = gnu.pointsOnBoundaries_(validation_experiment)
-    delta_0 = np.asarray(boundaries_)
-    delta_1 = np.zeros_like(delta_0)
 
     # draw different weights and extrapolate with them
-    extrapolations, all_elapsed = propabilisticExtrapolation( validation_experiment, points_used_for_validation, delay_model, m, g, f, likelihoods, gp_models, GP_scaler, mean_model, samples, device, messages, starting_idx, steps, dt = dt )
+    extrapolations, all_elapsed = propabilisticExtrapolation( validation_experiment, points_used_for_validation, delay_model, m, g, f, likelihoods, gp_models, 
+                        GP_scaler, mean_model, samples, device, messages, starting_idx, steps, dt = dt, processes = number_of_concurrent_processes )
     
     return extrapolations,validation_experiment,all_elapsed
 
-def propabilisticExtrapolation( validation_experiment, points_used_for_validation, delay_model, m, g, f, likelihoods, gp_models, GP_scaler, mean_model, samples, device, messages, starting_idx, steps, dt = 0.5):
+def propabilisticExtrapolation( validation_experiment : _Experiment, points_used_for_validation : list, delay_model : LinearRegression, m : mTerm, g : gTerm, f : fTerm, 
+    likelihoods : gpytorch.likelihoods.LikelihoodList, gp_models : gpytorch.models.IndependentModelList, GP_scaler : torch.Tensor, mean_model : bool, samples : int, 
+    device = None , messages = False, starting_idx = 300, steps = 4000, dt = 0.5, processes = None):
     # draw different weights and extrapolate with them
     extrapolations = []
     ## prepare extrapolation
@@ -195,7 +201,34 @@ def propabilisticExtrapolation( validation_experiment, points_used_for_validatio
         samples = 1
         coefficients_samp, F_sequences_samp, all_excitation_heights_samp, T_ambient_samp = [coefficients_samp], [F_sequences_samp], [all_excitation_heights_samp], [T_ambient_samp]
     
+    t = time.time()
+
+    ins = []
     for i,(coefficients, F_sequences, all_excitation_heights, T_ambient) in enumerate(zip(coefficients_samp, F_sequences_samp, all_excitation_heights_samp, T_ambient_samp)):
+        ins.append((i, samples, validation_experiment, coefficients, F_sequences, all_excitation_heights, m, g, starting_idx, steps, dt, messages))
+
+    if mean_model or processes == 1:
+        extrapolations = [unrollPathsWrapper(ins[0])]
+    else:
+        if processes is None:
+            processes = np.min([len(ins), mp.cpu_count()-1])
+        with mp.Pool(processes) as pool:
+            extrapolations = pool.map(unrollPathsWrapper,ins)    
+
+    elapsed = time.time() - t
+    all_elaspsed.append(elapsed/len(coefficients_samp))
+
+    return extrapolations,all_elaspsed
+
+def unrollPathsWrapper(args):
+    try:
+        out = unrollPaths(*args)
+    except Exception as e:
+        print(e)
+        out = np.NaN
+    return out
+
+def unrollPaths( i, samples, validation_experiment, coefficients, F_sequences, all_excitation_heights, m, g, starting_idx = 300, steps = 4000, dt = 0.5, messages = False):
         if messages:
             print(f"Sampe {i+1}/{samples}")
 
@@ -203,16 +236,6 @@ def propabilisticExtrapolation( validation_experiment, points_used_for_validatio
         T_state = []
         T_dot_last = []
         T_state.append( np.hstack([ p.T_t_use[starting_idx] for p in validation_experiment.Points ]) )
-
-        # tmp = []
-        # for p in points_used_for_validation:
-        #     tmp.append(p.T_t_use[starting_idx])
-        #     if starting_idx>0:
-        #         T_dot_last.append( p.T_t_use[starting_idx] - p.T_t_use[starting_idx-1] )
-        #     else:
-        #         T_dot_last.append( np.asarray([0]) )
-
-        # T_state.append( np.hstack(tmp) )
 
         # total model propagation
         theta_M = coefficients[:3,:]
@@ -225,32 +248,8 @@ def propabilisticExtrapolation( validation_experiment, points_used_for_validatio
             T_state.append( model(t,T_state[-1]))
 
         T_state_np = np.asarray(T_state)
-
-        ## quick state propagation function
-        # neighbor_list = [p.neighbor_nodes for p in validation_experiment.Points if p._hasNeighbors_()]
-        # statePropagation = quickStatePropagationWithActivation(neighbor_list, delta_0, delta_1)
-
-        # T_state_0 = T_state[-1]
         
-        t = time.time()
-        
-        #TODO change to integrate the new stuff
-        # T_state_np, _ = extrapolate(
-        # statePropagation = statePropagation,
-        # coefficients = coefficients,
-        # all_excitation_heights = all_excitation_heights,
-        # Fsequence = F_sequences,
-        # T_ambient = T_ambient,
-        # T_state_0 = T_state_0,
-        # starting_idx = starting_idx,
-        # num_of_steps = steps,
-        # )
-        
-        elapsed = time.time() - t
-        all_elaspsed.append(elapsed)
-        extrapolations.append(T_state_np)
-
-    return extrapolations,all_elaspsed
+        return T_state_np
 
 def extrapolate(statePropagation,coefficients,input_coefficients,all_excitation_heights,Fsequence,T_ambient,T_state_0,starting_idx,num_of_steps):
     # propagate state
@@ -440,15 +439,21 @@ def unscale(responses,scaler):
 
     return unscaled_responses_data.T
 
-def eval( in_ ):
-    m, g, f, file_to_evaluate, validation_experiment, likelihoods, models, GP_weights_normalizers, prc, delay_model , save_plots_ , RESULTS_FOLDER  , starting_point , steps  = in_
-    print(file_to_evaluate)
+def eval( m : mTerm, g : gTerm, f : fTerm, file_to_evaluate : str, validation_experiment : _Experiment, 
+    likelihoods : gpytorch.likelihoods.LikelihoodList, models : gpytorch.models.IndependentModelList, GP_weights_normalizers : torch.Tensor, 
+    prc : preProcessor, delay_model : LinearRegression , save_plots_ = False, RESULTS_FOLDER = "./"  , starting_point = 300, steps = 4000, 
+    number_of_concurrent_processes : int or None = None, pool : mp.Pool or None = None):
+    
+    # print(file_to_evaluate)
     file = file_to_evaluate
     all_extrapolation_times = []
 
+    # t = time.time()
     ## for prediction with neighbors' mean temps    
     mean_extrapolation,validation_experiment,all_elapsed_times = probabilisticPredictionsWrapper(copy(validation_experiment), m, g, f, likelihoods, models, GP_weights_normalizers , starting_idx = 300, steps = 4000, samples = 1, messages = False, mean_model=True, device = "cpu", scaler = copy(prc.scaler), delay_model = delay_model)
     mean_extrapolation = mean_extrapolation[0]
+    # t1 = time.time()
+    # print(f"\tElpsed 1 {t1 -t}")
 
     if save_plots_:
         sampled_extrapolations,*_ = probabilisticPredictionsWrapper(copy(validation_experiment), m, g, f, likelihoods, models, GP_weights_normalizers , starting_idx = 300, steps = 4000, samples = 100, messages = False, scaler = copy(prc.scaler), delay_model = delay_model, process_validation_experiment = False)
@@ -459,6 +464,8 @@ def eval( in_ ):
         ub = mean_extrapolation + 3*std_sampled_extrapolations
         lb = mean_extrapolation - 3*std_sampled_extrapolations
 
+    # t2 = time.time()
+    # print(f"\tElpsed 2 {t2 -t1}")
     T_state_nominal = np.asarray( [p.T_t_use[starting_point:starting_point+steps+1] for p in validation_experiment.Points if p._hasNeighbors_()] ).T
 
     unscaled_responses = unscale(mean_extrapolation,prc.scaler)
@@ -474,6 +481,8 @@ def eval( in_ ):
         lb_unscaled = lb_unscaled[:len(unscaled_targets),:]
         timestamps = timestamps[:len(unscaled_targets)]
 
+    # t3 = time.time()
+    # print(f"\tElpsed 3 {t3 -t2}")
 
     central_plate_points = [p for p in validation_experiment.Points if len(p.neighbor_nodes)==4]
     T_idxs_to_keep = [True if len(p.neighbor_nodes)==4 else False for p in validation_experiment.Points]
@@ -487,21 +496,31 @@ def eval( in_ ):
         # if you don't plot them one by one prepare the inputs for doing that in parallel
         ins.append( (copy(validation_experiment), mean_extrapolation, starting_point, steps, node) )
 
+    # t4 = time.time()
+    # print(f"\tElpsed 4 {t4 -t3}")
     # run in parallel the plotting fun
-    # results = []
-    # with mp.Pool( processes = np.min( [2 , len(nodes_to_plot) ]) ) as pool:
-    #     # mean_T_distances = pool.map( tempExtrapolationPlot, ins )
-    #     results = pool.map( synchronizeWithDtwwrapper, ins )
+    results = []
+    processes = np.min( [len(nodes_to_plot), int(mp.cpu_count()*0.8)] )
+
+    if pool is None:
+        with mp.Pool( processes = processes ) as pool:
+            # mean_T_distances = pool.map( tempExtrapolationPlot, ins )
+            results = pool.map( synchronizeWithDtwwrapper, ins )
+    else:
+        results = pool.map( synchronizeWithDtwwrapper, ins )
 
     # These distances are the DTW distances of each roll out. So they are already time-averaged
-    # for i,(in_i,result) in enumerate(zip(ins,results)):
+    for i,(in_i,result) in enumerate(zip(ins,results)):
     # for i,in_i in enumerate(ins):
     #     result = synchronizeWithDtwwrapper(in_i)
-    #     (*_, node)  = in_i
-    #     distance_i, distance_std, distance_min, distance_max = result
-    #     all_mean_T_distances[i] = distance_i
+        (*_, node)  = in_i
+        distance_i, distance_std, distance_min, distance_max = result
+        all_mean_T_distances[i] = distance_i
+
+    # t5 = time.time()
+    # print(f"\tElpsed 4 {t5 -t4}")
     
-    all_mean_T_distances = np.abs(mean_extrapolation[:,T_idxs_to_keep] - T_state_nominal[:,T_idxs_to_keep])
+    # all_mean_T_distances = np.abs(mean_extrapolation[:,T_idxs_to_keep] - T_state_nominal[:,T_idxs_to_keep])
     mean_dtw_rel_error = np.mean(all_mean_T_distances) # spatial average of mean Distance in timeseries of nodes
 
     # write performance
@@ -522,11 +541,14 @@ def eval( in_ ):
             vis.plotContour2(unscaled_responses[:,T_idxs_to_keep],point_locations,np.array(step_to_plot),d_grid = 27, result_folder = RESULTS_FOLDER, field_value_name_id = "CoarseTemperature_"+ file, colorbar_scaling = colorbar_scaling)
             vis.plotContour2(unscaled_targets[:,T_idxs_to_keep],point_locations,np.array(step_to_plot),d_grid = 27, result_folder = RESULTS_FOLDER, field_value_name_id = "CoarseNominalTemperature_"+ file, colorbar_scaling = colorbar_scaling)
 
+    # t6 = time.time()
+    # print(f"\tElpsed 4 {t6 -t5}")
+
     return mean_dtw_rel_error
 
-def safe_eval(ins):
+def safe_eval(*ins):
     try:
-        out = eval(ins)
+        out = eval(*ins)
     except Exception as e:
         print(e)
         out = np.NaN

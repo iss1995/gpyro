@@ -6,7 +6,7 @@ import multiprocessing_on_dill as mp
 import scipy
 import data_processing._config as config
 import data_processing.preprocessor as preprocessor
-from pathos.pools import ParallelPool as Pool
+# from pathos.pools import ParallelPool as Pool
 
 import torch
 import csv
@@ -35,7 +35,7 @@ def executeMain(hyperparameters,kwargs,save_plots_ = False):
     return result
 
 # %%
-def main(save_plots_ = False):
+def main(N = 100,save_plots_ = False):
 
     warnings.filterwarnings("ignore")
     # preprocess training data and create scaler
@@ -129,7 +129,6 @@ def main(save_plots_ = False):
         "neighbor_list" : neighbor_list, "experiment_ids" : experiment_ids,"prc" : prc 
     }
     obj = objective(kwargs)
-    N = 200
     # Let us minimize the objective function above.
 
     print(f"Running {N} trials...")
@@ -138,8 +137,7 @@ def main(save_plots_ = False):
     study.optimize(obj, n_trials=N)
     print("Best value: {} (params: {})\n".format(study.best_value, study.best_params))
 
-    fig = plt.figure(figsize=(42,42))
-    optuna.visualization.plot_contour(study)
+    fig = optuna.visualization.plot_contour(study)
     plt.savefig(f"{study.study_name}.pdf")
 
     return None
@@ -227,24 +225,21 @@ def evaluate_hyperparamters( hyperparameters, bounds_f, bounds_g, bounds_m, para
 
     experiment_range = np.arange(2,len(experiment_ids))
     files_to_evaluate = [f"T{i}" for i in experiment_range]
-    validation_experiments = [copy(prc.experiments[experiment_to_use]) for experiment_to_use in experiment_range]
-    extrap_in = [(copy(m), copy(g), copy(f), file_id, validation_experiment, copy(likelihoods), copy(models), copy(GP_weights_normalizers), copy(prc), copy(delay_model), save_plots_, RESULTS_FOLDER, starting_point, steps) for (file_id,validation_experiment) in zip(files_to_evaluate,validation_experiments) ]
+    validation_experiments = [prc.experiments[experiment_to_use] for experiment_to_use in experiment_range]
+    all_mean_dtw_distances = []
 
-    processes = np.min( [len(extrap_in), int(mp.cpu_count()*0.8)] )
-    # decorator = partial(multiprocess_eval, processes = processes)
+    number_of_concurrent_processes = mp.cpu_count() - 1
+    all_mean_dtw_distances = []
+    with mp.Pool(number_of_concurrent_processes) as pool:
+        for (validation_experiment, file_id) in zip(validation_experiments,files_to_evaluate):    
+            all_mean_dtw_distances.append( exu.safe_eval(m, g, f, file_id, validation_experiment, likelihoods, models, GP_weights_normalizers, prc, delay_model , save_plots_ , RESULTS_FOLDER  , starting_point , steps, number_of_concurrent_processes, pool ))
 
-    # @decorator
-    with mp.Pool( processes ) as pool:
-        all_mean_dtw_distances = pool.map_async(exu.safe_eval,extrap_in).get()
-        # all_mean_dtw_distances.wait()
-        # all_mean_dtw_distances.wait()
-        # time.sleep(300)
-        pool.join() 
-
+    all_mean_dtw_distances = np.asarray(all_mean_dtw_distances)
     failed_idxs = np.isnan(all_mean_dtw_distances)
-    # all_mean_dtw_distances = eval(extrap_in)
+
     T_Mean_error = np.mean(all_mean_dtw_distances[~failed_idxs]) * 100
-    print(f"\nDTW mean relative error: {T_Mean_error}%")
+    print(f"\nDTW mean relative error: {T_Mean_error}%\n(G_reg, F_reg, M_reg, output_scale, length_mean, length_var) {hyperparameters}"+
+    "\n______________________________________________________________________________")
     return T_Mean_error 
 
 class objective:
@@ -268,5 +263,6 @@ class objective:
 if __name__ == "__main__":
     
     warnings.filterwarnings("ignore")
-    _ = main(True)
+    N = 200
+    _ = main(N=N,save_plots_=False)
 # %%
