@@ -1,5 +1,5 @@
 from urllib import response
-from cv2 import sepFilter2D
+from cv2 import Laplacian, sepFilter2D
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -94,6 +94,7 @@ class mTerm:
         self.neighbor_Ts = T[self.idx_map]
         self.neighbor_Ts[self.no_connections] = 0 # zero out the non existing connections
         laplacians = (self.number_of_neighbors*T - np.sum(self.neighbor_Ts, axis = -1))/(self.d_grid) # dim (n,)
+        # laplacians = self.calculateLaplacians(T)
         regressor = np.vstack(( T, laplacians, (T - self.ambient_T)*self.delta)).T #dim (n,3)
         if len(self.params)>3:
             out = np.sum(regressor*self.params, axis = -1).squeeze() # dim (n,)
