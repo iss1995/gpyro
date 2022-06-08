@@ -410,10 +410,10 @@ class loss_M:
         if self.N == 1:
             # TODO : current implementation of M propagates system by one timestep and accepts a thermal field as input. Rethink of how to implement 
             m_val = self.m.oneStepPropagation( self.x, self.laplacians, self.deltas)
-            preds = (1-self.f_seq[self.train_idxs])*m_val[self.train_idxs] + params[-1]*self.g(self.h[self.train_idxs],self.x[self.train_idxs])
+            preds = (1-self.f_seq[self.train_idxs])*m_val[self.train_idxs] + params[-1]*self.f_seq[self.train_idxs]*self.g(self.h[self.train_idxs],self.x[self.train_idxs])
             error = self.y[self.train_idxs] - preds
 
-            test = (1-self.f_seq[self.test_idxs])*m_val[self.test_idxs] + params[-1]*self.g(self.h[self.test_idxs],self.x[self.test_idxs])
+            test = (1-self.f_seq[self.test_idxs])*m_val[self.test_idxs] + params[-1]*self.f_seq[self.test_idxs]*self.g(self.h[self.test_idxs],self.x[self.test_idxs])
 
             test_error = self.y[self.test_idxs] - test
 

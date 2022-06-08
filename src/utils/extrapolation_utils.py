@@ -176,13 +176,13 @@ starting_idx = 300, steps = 4000, samples = 100, messages = False, mean_model = 
 
     # draw different weights and extrapolate with them
     extrapolations, all_elapsed = propabilisticExtrapolation( validation_experiment, points_used_for_validation, delay_model, m, g, f, likelihoods, gp_models, 
-                        GP_scaler, mean_model, samples, device, messages, starting_idx, steps, dt = dt, processes = number_of_concurrent_processes )
+                        GP_scaler, mean_model, samples, device, messages, starting_idx, steps, dt = dt, number_of_concurrent_processes = number_of_concurrent_processes )
     
     return extrapolations,validation_experiment,all_elapsed
 
 def propabilisticExtrapolation( validation_experiment : _Experiment, points_used_for_validation : list, delay_model : LinearRegression, m : mTerm, g : gTerm, f : fTerm, 
     likelihoods : gpytorch.likelihoods.LikelihoodList, gp_models : gpytorch.models.IndependentModelList, GP_scaler : torch.Tensor, mean_model : bool, samples : int, 
-    device = None , messages = False, starting_idx = 300, steps = 4000, dt = 0.5, processes : int or None = None, pool : mp.Pool or None = None):
+    device = None , messages = False, starting_idx = 300, steps = 4000, dt = 0.5, number_of_concurrent_processes : int or None = None, pool : mp.Pool or None = None):
     # draw different weights and extrapolate with them
     extrapolations = []
     ## prepare extrapolation
@@ -208,13 +208,13 @@ def propabilisticExtrapolation( validation_experiment : _Experiment, points_used
     for i,(coefficients, F_sequences, all_excitation_heights, T_ambient) in enumerate(zip(coefficients_samp, F_sequences_samp, all_excitation_heights_samp, T_ambient_samp)):
         ins.append((i, samples, validation_experiment, coefficients, F_sequences, all_excitation_heights, m, g, starting_idx, steps, dt, messages))
 
-    if mean_model or processes == 1:
+    if mean_model or number_of_concurrent_processes == 1:
         extrapolations = [unrollPathsWrapper(ins[0])]
     else:
         if pool is None:
-            if processes is None:
-                processes = np.min([len(ins), mp.cpu_count()-1])
-            with mp.Pool(processes) as pool:
+            if number_of_concurrent_processes is None:
+                number_of_concurrent_processes = np.min([len(ins), mp.cpu_count()-1])
+            with mp.Pool(number_of_concurrent_processes) as pool:
                 extrapolations = pool.map(unrollPathsWrapper,ins)    
         else:
             extrapolations = pool.map(unrollPathsWrapper,ins)
@@ -460,7 +460,7 @@ def eval( m : mTerm, g : gTerm, f : fTerm, file_to_evaluate : str, validation_ex
     # print(f"\tElpsed 1 {t1 -t}")
 
     if save_plots_:
-        sampled_extrapolations,*_ = probabilisticPredictionsWrapper(copy(validation_experiment), m, g, f, likelihoods, models, GP_weights_normalizers , starting_idx = 300, steps = 4000, samples = 100, messages = False, scaler = copy(prc.scaler), delay_model = delay_model, process_validation_experiment = False)
+        sampled_extrapolations,*_ = probabilisticPredictionsWrapper(copy(validation_experiment), m, g, f, likelihoods, models, GP_weights_normalizers , starting_idx = 300, steps = 4000, samples = 100, messages = False, scaler = copy(prc.scaler), delay_model = delay_model, process_validation_experiment = False , number_of_concurrent_processes=number_of_concurrent_processes)
 
         stacked_sampled_extrapolations = np.stack(sampled_extrapolations,axis=0)
         std_sampled_extrapolations = np.std(stacked_sampled_extrapolations,axis = 0)
@@ -504,10 +504,11 @@ def eval( m : mTerm, g : gTerm, f : fTerm, file_to_evaluate : str, validation_ex
     # print(f"\tElpsed 4 {t4 -t3}")
     # run in parallel the plotting fun
     results = []
-    processes = np.min( [len(nodes_to_plot), int(mp.cpu_count()*0.8)] )
+    if number_of_concurrent_processes is None:
+        number_of_concurrent_processes = np.min( [len(nodes_to_plot), int(mp.cpu_count()*0.8)] )
 
     if pool is None:
-        with mp.Pool( processes = processes ) as pool:
+        with mp.Pool( processes = number_of_concurrent_processes ) as pool:
             # mean_T_distances = pool.map( tempExtrapolationPlot, ins )
             results = pool.map( synchronizeWithDtwwrapper, ins )
     else:
