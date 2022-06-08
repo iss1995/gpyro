@@ -238,7 +238,6 @@ def main(save_plots_ = False):
 
     all_mean_dtw_distances = np.asarray(all_mean_dtw_distances)
     failed_idxs = np.isnan(all_mean_dtw_distances)
-    # all_mean_dtw_distances = eval(extrap_in)
     T_Mean_error = np.mean(all_mean_dtw_distances[~failed_idxs]) * 100
     print(f"\nDTW mean relative error: {T_Mean_error}%\tSuccesful validations {len(all_mean_dtw_distances)-np.sum(failed_idxs)}")
     return T_Mean_error
