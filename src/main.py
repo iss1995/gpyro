@@ -132,7 +132,8 @@ def main(save_plots_ = False):
             "M_reg": M_reg,
             "param_f0": param_f0,
             "param_g0": param_g0,
-            "param_m0": param_m0}
+            "param_m0": param_m0,
+            "epochs" : epochs}
     # f_parameters_per_building_layer_height, g_parameters_per_building_layer_height, m_parameters_per_building_layer_height, all_training_times_per_state = onopt.onlineOptimization(layer_idxs, states, points_used_for_training, **kwargs )
     f_parameters_per_building_layer_height, g_parameters_per_building_layer_height, m_parameters_per_building_layer_height, all_training_times_per_state = onopt.batchOptimization(states, points_used_for_training, m , f, g, **kwargs )
 

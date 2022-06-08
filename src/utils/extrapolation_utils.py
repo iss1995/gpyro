@@ -55,6 +55,7 @@ def prepareExtrapolation(validation_experiment : _Experiment, points_used_for_va
 
 
     else:
+        #TODO: parallelize this block
         coefficients_rep = []
         input_coefficients_rep = []
         F_sequences_rep = []
