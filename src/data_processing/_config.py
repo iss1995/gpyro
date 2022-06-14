@@ -37,22 +37,37 @@ def config():
 
         d_grid = 27
 
-        G_reg, F_reg, M_reg, output_scale, length_mean, length_var = (1.3494328312494594e-06, 3.8252949492342524e-05, 0.05727953475125568, 1.1575308075243074, 0.5469046384472692, 0.06122193346017071)
-        bounds_m = (np.array([-np.inf, -np.inf, -np.inf, -np.inf, 0]),
-                np.array([0, 0, 0, 0, np.inf ]))
-        params_m0 = -np.ones( (5,) )*0.1 # one for T,Delta_T,amb,in1,in2 # one for T,Delta_T,amb,in1,in2
-        params_m0[-1]= 0.1 # one for T,Delta_T,amb,in1,in2
+        # G_reg, F_reg, M_reg, output_scale, length_mean, length_var = (1.3494328312494594e-06, 3.8252949492342524e-05, 0.05727953475125568, 1.1575308075243074, 0.5469046384472692, 0.06122193346017071)
+        # G_reg, F_reg, M_reg, output_scale, length_mean, length_var = (2.965568341672765e-05, 0.0058595727258403405, 0.004350615438521492, 0.6256305896991189, 0.2802618031752034, 0.01993745968749789)
+        # (G_reg, F_reg, M_reg, output_scale, length_mean, length_var) = (0.00260910580042891, 3.5085344790466794e-05, 0.008394886320272292, 0.6954645807725358, 0.4168718470022085, 0.004747836713657)
+        (G_reg, F_reg, M_reg, output_scale, length_mean, length_var) = (0.0066683951679123174, 0.00036449461447877454, 0.0013879306498389356, 1.9310377024123906, 0.13086750735377498, 0.9068099667753063)
+        epochs = 3
+        underestimate_lengthscales = 0
 
-        bounds_g = Bounds([-np.inf, -np.inf, -np.inf, -np.inf, 0.2, 0, -np.inf], 
-                [np.inf, np.inf, np.inf, np.inf, np.inf, np.inf, np.inf ]) 
-        param_g0 = np.ones((7))*0.1
+        param_f0 = np.asarray([1.])
+        # bounds_f = scipy.optimize.Bounds([0.05],[np.inf])
+        bounds_f = ([0.05],[np.inf])
 
-        bounds_f = Bounds([-np.inf, -np.inf, -np.inf, -np.inf, 0.2, 0, -np.inf], 
-                [np.inf, np.inf, np.inf, np.inf, np.inf, np.inf, np.inf ]) 
-        param_f0 = np.zeros((7))
-        param_f0[-3] = 1 # lengthscale
+        param_m0 = np.asarray([-.1,-.1,-.1, 1])
+        # bounds_m = scipy.optimize.Bounds([-np.inf, -np.inf, -np.inf],[0, 0, 0])
+        bounds_m = ([-np.inf, -np.inf, -np.inf, 0],[0, 0, 0, np.inf])
 
-        return FILES_FOLDER,POINT_TEMPERATURE_FILES,POINT_COORDINATES,TRAJECTORY_FILES,RESULTS_FOLDER,RESULTS_FOLDER_GP,RESULTS_FOLDER_MODEL,d_grid,bounds_f,F_reg,bounds_g,G_reg,bounds_m,M_reg,output_scale,length_mean,length_var,param_f0,param_g0,params_m0
+        param_g0 = np.asarray([0.1,0.1,0.1])
+        # bounds_g = scipy.optimize.Bounds([-np.inf, -np.inf, -np.inf],[np.inf, np.inf, np.inf])
+        bounds_g = ([-np.inf, -np.inf, -np.inf],[np.inf, np.inf, np.inf])
+        opt_kwargs = {"bounds_f":bounds_f, 
+                "bounds_g":bounds_g, 
+                "bounds_m":bounds_m, 
+                "F_reg":F_reg,
+                "G_reg": G_reg,
+                "M_reg": M_reg,
+                "param_f0": param_f0,
+                "param_g0": param_g0,
+                "param_m0": param_m0,
+                "epochs" : epochs,
+                "perturbation_magnitude" : 0.0}
+
+        return FILES_FOLDER,POINT_TEMPERATURE_FILES,POINT_COORDINATES,TRAJECTORY_FILES,RESULTS_FOLDER,RESULTS_FOLDER_GP,RESULTS_FOLDER_MODEL,d_grid,output_scale,length_mean,length_var,opt_kwargs
 
 
 def configHyperparameters():

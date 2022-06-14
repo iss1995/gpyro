@@ -1376,7 +1376,7 @@ def batchOptimization_(layer_idxs, unique_state_values, points_used_for_training
 
     return f_parameters_per_building_layer_height, g_parameters_per_building_layer_height, m_parameters_per_building_layer_height, all_training_times_per_state
 
-def batchOptimization(states, points_used_for_training, m : mTerm, f : fTerm, g : gTerm, param_m0 : np.ndarray, param_f0 : np.ndarray, param_g0 : np.ndarray, bounds_m : tuple, bounds_f : tuple, bounds_g : tuple, M_reg : int, F_reg : int, G_reg : int, epochs = 2, verbose = True, noise_magnitude = 0.1):
+def batchOptimization(states, points_used_for_training, m : mTerm, f : fTerm, g : gTerm, param_m0 : np.ndarray, param_f0 : np.ndarray, param_g0 : np.ndarray, bounds_m : tuple, bounds_f : tuple, bounds_g : tuple, M_reg : int, F_reg : int, G_reg : int, epochs = 2, verbose = True, perturbation_magnitude = 0.1):
 
     excited_points = [ p for p in points_used_for_training if len(p.input_idxs)>0]
     g_parameters_per_building_layer_height = []
@@ -1414,9 +1414,9 @@ def batchOptimization(states, points_used_for_training, m : mTerm, f : fTerm, g 
         all_training_times_per_state.append(elapsed/len(states))
 
         # inject noise to initial parameters for next epoch
-        param_f0 += noise_magnitude*param_f0*np.random.rand(len(param_f0))
-        param_g0 += noise_magnitude*param_g0*np.random.rand(len(param_g0))
-        param_m0 += noise_magnitude*param_m0*np.random.rand(len(param_m0))
+        param_f0 += perturbation_magnitude*param_f0*np.random.rand(len(param_f0))
+        param_g0 += perturbation_magnitude*param_g0*np.random.rand(len(param_g0))
+        param_m0 += perturbation_magnitude*param_m0*np.random.rand(len(param_m0))
     
     return f_parameters_per_building_layer_height, g_parameters_per_building_layer_height, m_parameters_per_building_layer_height, all_training_times_per_state
 

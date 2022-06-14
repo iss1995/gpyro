@@ -6,6 +6,7 @@ import data_processing._config as config
 import data_processing.preprocessor as preprocessor
 # from pathos.pools import ParallelPool as Pool
 
+import torch, random
 import warnings
 import optuna
 
@@ -33,7 +34,7 @@ def main(N = 100,save_plots_ = False):
     ###############################################################################################
     # save_plots_ = True
     print("Post-processing...")
-    FILES_FOLDER,POINT_TEMPERATURE_FILES,POINT_COORDINATES,TRAJECTORY_FILES,RESULTS_FOLDER,RESULTS_FOLDER_GP,RESULTS_FOLDER_MODEL,d_grid,bounds_f,F_reg,bounds_g,G_reg,bounds_m,M_reg,output_scale,length_mean,length_var,param_f0,param_g0,param_m0 = config.config()
+    FILES_FOLDER,POINT_TEMPERATURE_FILES,POINT_COORDINATES,TRAJECTORY_FILES,RESULTS_FOLDER,RESULTS_FOLDER_GP,RESULTS_FOLDER_MODEL,d_grid,output_scale,length_mean,length_var,opt_kwargs = config.config()
     FILES_FOLDER = "./Gpyro-TD/"
     prc = preprocessor.preProcessor(FILES_FOLDER,POINT_TEMPERATURE_FILES,POINT_COORDINATES,TRAJECTORY_FILES,RESULTS_FOLDER,subsample = 5)
     _ = prc.loadData(d_grid = d_grid, deposition_height_of_boundary =  0 )
@@ -123,13 +124,13 @@ def main(N = 100,save_plots_ = False):
     # Let us minimize the objective function above.
 
     print(f"Running {N} trials...")
-    study = optuna.create_study()
+    study = optuna.create_study(study_name = "gpyro_hyperparameter_opt_"+id_tag ,direction="minimize")
     print(study.study_name)
     study.optimize(obj, n_trials=N)
     print("Best value: {} (params: {})\n".format(study.best_value, study.best_params))
 
-    fig = optuna.visualization.plot_contour(study)
-    fig.savefig(f"{study.study_name}.pdf")
+    fig = optuna.visualization.plot_param_importances(study)
+    fig.write_image(f"{study.study_name}.pdf")
 
     return None
 
@@ -137,6 +138,7 @@ def evaluate_hyperparamters( hyperparameters, bounds_f, bounds_g, bounds_m, para
     save_plots_ = False
     (G_reg, F_reg, M_reg, output_scale, length_mean, length_var) = hyperparameters
 
+    epochs = 3
     g = onopt.gTerm(params = param_g0)
     f = onopt.fTerm(params = param_f0)
     m = onopt.mTerm(neighbors = neighbor_list ,params = param_m0)
@@ -149,7 +151,9 @@ def evaluate_hyperparamters( hyperparameters, bounds_f, bounds_g, bounds_m, para
             "M_reg": M_reg,
             "param_f0": param_f0,
             "param_g0": param_g0,
-            "param_m0": param_m0}
+            "param_m0": param_m0,
+            "epochs" : epochs,
+            "perturbation_magnitude" : 0.0}
     # f_parameters_per_building_layer_height, g_parameters_per_building_layer_height, m_parameters_per_building_layer_height, all_training_times_per_state = onopt.onlineOptimization(layer_idxs, states, points_used_for_training, **kwargs )
     f_parameters_per_building_layer_height, g_parameters_per_building_layer_height, m_parameters_per_building_layer_height, all_training_times_per_state = onopt.batchOptimization(states, points_used_for_training, m , f, g, **kwargs )
 
@@ -172,9 +176,12 @@ def evaluate_hyperparamters( hyperparameters, bounds_f, bounds_g, bounds_m, para
     # overwirte elements of g and f where no training data were available. Assign values that will improve GP fit.
     # are you sure it helps? maybe 0 better?
     states_with_no_excitation = np.where(states <= 0)[0]
-    m_repository[states_with_no_excitation[:-1],-1] = m_repository[states_with_no_excitation[-1],-1]
-    g_repository[states_with_no_excitation[:-1],:] = g_repository[states_with_no_excitation[-1],:]
-    f_repository[states_with_no_excitation[:-1],:] = f_repository[states_with_no_excitation[-1],:]
+    # m_repository[states_with_no_excitation[:-1],-1] = m_repository[states_with_no_excitation[-1],-1]
+    # g_repository[states_with_no_excitation[:-1],:] = g_repository[states_with_no_excitation[-1],:]
+    # f_repository[states_with_no_excitation[:-1],:] = f_repository[states_with_no_excitation[-1],:]
+    m_repository[states_with_no_excitation[:-1],-1] = m_repository[states_with_no_excitation[-1],-1]-m_repository[:states_with_no_excitation[-1],-1]
+    g_repository[states_with_no_excitation[:-1],:] = g_repository[states_with_no_excitation[-1],:]-g_repository[:states_with_no_excitation[-1],:]
+    f_repository[states_with_no_excitation[:-1],:] = f_repository[states_with_no_excitation[-1],:]-f_repository[:states_with_no_excitation[-1],:]
 
     # overwrite input coefs for not activated elemets
     # m_repository[0,-1] = m_repository[-1,-1]
@@ -220,12 +227,15 @@ def evaluate_hyperparamters( hyperparameters, bounds_f, bounds_g, bounds_m, para
     validation_experiments = [prc.experiments[experiment_to_use] for experiment_to_use in experiment_range]
     all_mean_dtw_distances = []
 
-    number_of_concurrent_processes = 12
+    number_of_concurrent_processes = mp.cpu_count()-1
     all_mean_dtw_distances = []
     # with mp.Pool(number_of_concurrent_processes) as pool:
     pool = None
-    for (validation_experiment, file_id) in zip(validation_experiments,files_to_evaluate):    
-        all_mean_dtw_distances.append( exu.safe_eval(m, g, f, file_id, validation_experiment, likelihoods, models, GP_weights_normalizers, prc, delay_model , save_plots_ , RESULTS_FOLDER  , starting_point , steps, number_of_concurrent_processes, pool ))
+    try:
+        for (validation_experiment, file_id) in zip(validation_experiments,files_to_evaluate):    
+            all_mean_dtw_distances.append( exu.safe_eval(m, g, f, file_id, validation_experiment, likelihoods, models, GP_weights_normalizers, prc, delay_model , save_plots_ , RESULTS_FOLDER  , starting_point , steps, number_of_concurrent_processes, pool ))
+    except Exception as e:
+        print(e)
 
     all_mean_dtw_distances = np.asarray(all_mean_dtw_distances)
     failed_idxs = np.isnan(all_mean_dtw_distances)
@@ -254,7 +264,12 @@ class objective:
         return executeMain(hyperparams, self.kwargs)
 
 if __name__ == "__main__":
-    
+
+    SEED = 0
+    np.random.seed(SEED)
+    torch.manual_seed(SEED)
+    random.seed(SEED)
+
     warnings.filterwarnings("ignore")
     N = 200
     _ = main(N=N,save_plots_=False)
