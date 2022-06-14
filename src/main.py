@@ -32,7 +32,11 @@ def multiprocess_eval( func, processes = 2):
         return results
     return wrapper
 # %%
-def main(save_plots_ = False):
+def main(save_plots_ = False, seed = 0):
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    random.seed(seed)
+    
     # preprocess training data and create scaler
     ###############################################################################################
     # save_plots_ = False
@@ -227,6 +231,6 @@ if __name__ == "__main__":
     torch.manual_seed(SEED)
     random.seed(SEED)
 
-    _ = main(True) 
-    _ = main(True) 
+    _ = main(True,seed = SEED) 
+    _ = main(True,seed = SEED) 
 # %%
