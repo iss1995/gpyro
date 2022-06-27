@@ -227,10 +227,5 @@ def main(save_plots_ = False, seed = 0):
 # %%
 if __name__ == "__main__":
     SEED = 0
-    np.random.seed(SEED)
-    torch.manual_seed(SEED)
-    random.seed(SEED)
-
-    _ = main(True,seed = SEED) 
     _ = main(True,seed = SEED) 
 # %%

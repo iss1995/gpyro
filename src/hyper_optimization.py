@@ -134,10 +134,14 @@ def main(N = 100,save_plots_ = False):
 
     return None
 
-def evaluate_hyperparamters( hyperparameters, bounds_f, bounds_g, bounds_m, param_f0, param_g0, param_m0, points_used_for_training, states, RESULTS_FOLDER, neighbor_list, experiment_ids, prc ):
+def evaluate_hyperparamters( hyperparameters, bounds_f, bounds_g, bounds_m, param_f0, param_g0, param_m0, points_used_for_training, states, RESULTS_FOLDER, neighbor_list, experiment_ids, prc, seed = 0 ):
     save_plots_ = False
     (G_reg, F_reg, M_reg, output_scale, length_mean, length_var) = hyperparameters
 
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    random.seed(seed)
+    
     epochs = 3
     g = onopt.gTerm(params = param_g0)
     f = onopt.fTerm(params = param_f0)
@@ -250,15 +254,15 @@ class objective:
         self.kwargs = kwargs
 
     def __call__(self,trial):
-        g_reg = trial.suggest_float("g_reg", -6, 0)
+        g_reg = trial.suggest_float("g_reg", -2, 0)
         # g_reg = -5
-        f_reg = trial.suggest_float("f_reg", -6, 0)
+        f_reg = trial.suggest_float("f_reg", -6, -4)
         # f_reg = -3.4917008457058287
-        m_reg = trial.suggest_float("m_reg", -6,0)
+        m_reg = trial.suggest_float("m_reg", -3, -1)
         # m_reg = -2.298677092036098
-        output_scale = trial.suggest_float("output_scale", -1, 1)
-        length_mean = trial.suggest_float("length_mean", -3, 0)
-        length_var = trial.suggest_float("length_var", -3, 0)
+        output_scale = trial.suggest_float("output_scale", -1, 0)
+        length_mean = trial.suggest_float("length_mean", -2, 0)
+        length_var = trial.suggest_float("length_var", -3, -1)
 
         hyperparams = (10**g_reg, 10**f_reg, 10**m_reg, 10**output_scale, 10**length_mean, 10**length_var)
         return executeMain(hyperparams, self.kwargs)
@@ -271,6 +275,6 @@ if __name__ == "__main__":
     random.seed(SEED)
 
     warnings.filterwarnings("ignore")
-    N = 200
+    N = 1000
     _ = main(N=N,save_plots_=False)
 # %%

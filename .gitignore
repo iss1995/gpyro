@@ -132,3 +132,5 @@ dmypy.json
 Gpyro-TD/
 results/
 back_up/
+*.pdf
+*.out
