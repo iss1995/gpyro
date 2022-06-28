@@ -3,6 +3,7 @@ from cv2 import Laplacian, sepFilter2D
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from requests import options
 import utils.generic_utils as gnu
 import time
 
@@ -384,7 +385,7 @@ class loss_G:
         return residuals
 
 class loss_M:
-    def __init__(self, state_level_idxs, training_points, m :mTerm,  g :gTerm, f:fTerm, lengthscale = 10, theta_G = np.array([0,0,0]) , regularizer = 1e-2, N = 1, parameter_scale = 1,test_ratio = 0.25,random_state = 934) -> None:
+    def __init__(self, state_level_idxs, training_points, m :mTerm,  g :gTerm, f:fTerm, lengthscale = 10, theta_G = np.array([0,0,0]) , regularizer = 1e-2, N = 1, parameter_scale = 1,test_ratio = 0.25,random_state = 934, warp_loss_ = False, wrapping_fun = np.arctan, grad_relaxation = 0.1) -> None:
        
         self.m = m
         self.g = g 
@@ -401,6 +402,12 @@ class loss_M:
         self._createFeatureTargets(test_ratio,random_state)
         self.min_test_loss = 1e10
         self.best_params = None
+        self.grad_relaxation = grad_relaxation
+        if warp_loss_:
+
+            self.warp_loss = lambda x: wrapping_fun(grad_relaxation * x**2)
+        else:
+            self.warp_loss = lambda x: grad_relaxation*x
     
     def __call__(self, params):
        
@@ -426,7 +433,7 @@ class loss_M:
             self.best_params = params
             self.min_test_loss = test_loss
     
-        return loss 
+        return self.warp_loss( loss ) 
     
     def _createFeatureTargets(self,test_size,random_state) -> None:
         all_temperatures = np.vstack([p.T_t_use for p in self.training_points])
@@ -468,7 +475,7 @@ class loss_M:
         return None
 
 
-def optimizeF( states, excited_points,  param_f0, bounds , f : fTerm, F_reg = 1e-2, underestimate_lengthscales = 0):
+def optimizeF( states, excited_points,  param_f0, bounds : tuple or Bounds , f : fTerm, F_reg = 1e-2, underestimate_lengthscales = 0):
     #  learn F
     excitations = []
     for state_level in states:
@@ -482,8 +489,8 @@ def optimizeF( states, excited_points,  param_f0, bounds , f : fTerm, F_reg = 1e
     parameters_per_state_level = []
     for i,state_level_idxs in enumerate(excitations):
         optimizer = loss_F(state_level_idxs,excited_points, regularizer= F_reg, f = f)
-        # res = minimize( optimizer , param_f0, bounds= bounds, method= "L-BFGS-B", tol = 1e-12 )
-        res = least_squares( optimizer , param_f0, bounds= bounds, ftol = 1e-12, method= "trf", loss = "arctan" )
+        res = minimize( optimizer , param_f0, bounds= bounds, method= "L-BFGS-B", tol = 1e-12 )
+        # res = least_squares( optimizer , param_f0, bounds= bounds, ftol = 1e-12, method= "trf", loss = "arctan" )
         param_f0 = res.x
         parameters_per_state_level.append(res.x[0]) # omit the last one
 
@@ -498,7 +505,7 @@ def optimizeF( states, excited_points,  param_f0, bounds , f : fTerm, F_reg = 1e
     ###########################
     return lengthscales, excitations, param_f0
 
-def optimizeG( f : fTerm, g : gTerm, states, excitations, excited_points, param_g0, lengthscaleModel : interp1d, bounds , G_reg = 1e-2 ,test_ratio = 0.25):
+def optimizeG( f : fTerm, g : gTerm, states, excitations, excited_points, param_g0, lengthscaleModel : interp1d, bounds : tuple or Bounds , G_reg = 1e-2 ,test_ratio = 0.25):
     
     #  learn G
     ## learn the lengthscale
@@ -506,8 +513,8 @@ def optimizeG( f : fTerm, g : gTerm, states, excitations, excited_points, param_
     for i,(state_level_idxs,state) in enumerate(zip(excitations,states)):
         lengthscale = lengthscaleModel(state)
         optimizer = loss_G(state_level_idxs, excited_points, g, f, regularizer = G_reg, lengthscale = lengthscale, test_ratio=test_ratio)
-        # res = minimize( optimizer , param_g0, bounds= bounds, method= "L-BFGS-B", tol = 1e-12 )
-        res = least_squares( optimizer , param_g0, bounds= bounds, ftol = 1e-12, method= "trf", loss = "arctan")
+        res = minimize( optimizer , param_g0, bounds= bounds, method= "L-BFGS-B", tol = 1e-12 )
+        # res = least_squares( optimizer , param_g0, bounds= bounds, ftol = 1e-12, method= "trf", loss = "arctan")
         param_g0 = res.x
         parameters_per_state_level.append(optimizer.best_params) # omit the last one
 
@@ -518,7 +525,7 @@ def optimizeG( f : fTerm, g : gTerm, states, excitations, excited_points, param_
     coefficients = np.asarray(parameters_per_state_level)
     return coefficients, param_g0
 
-def optimizeM( m : mTerm, f : fTerm, g : gTerm, states, training_points,  param_m0, lengthscaleModel : interp1d, gCoefModel : interp1d, bounds , M_reg = 1e-2,test_ratio = 0.25):
+def optimizeM( m : mTerm, f : fTerm, g : gTerm, states, training_points,  param_m0, lengthscaleModel : interp1d, gCoefModel : interp1d, bounds: tuple or Bounds , M_reg = 1e-2,test_ratio = 0.25, wrapping_function = np.arctan, wrap_function_ = False):
     
     # find state levels for each point
     layer_idxs = []
@@ -529,13 +536,14 @@ def optimizeM( m : mTerm, f : fTerm, g : gTerm, states, training_points,  param_
             point_layer_idxs.append( tmp.astype(np.int64) )
         layer_idxs.append(point_layer_idxs)
     
+    options = {'maxcor': 10, 'gtol': 1e-05, 'eps': 1e-08, 'maxfun': 15000, 'maxiter': 15000, 'iprint': 50, 'maxls': 20, 'finite_diff_rel_step': None}
     parameters_per_state_level = []
     for i,(state_level_idxs,state) in enumerate(zip(layer_idxs,states)):
         lengthscale = lengthscaleModel(state)
         theta_G = gCoefModel(state)
-        optimizer = loss_M(state_level_idxs, training_points, m, g, f,lengthscale = lengthscale, theta_G = theta_G, regularizer = M_reg, test_ratio=test_ratio)
-        # res = minimize( optimizer , param_m0, bounds= bounds, ftol = 1e-12, method= "trf", loss = "arctan" )
-        res = least_squares( optimizer , param_m0, ftol = 1e-12, bounds= bounds, method= "trf", loss = "arctan")
+        optimizer = loss_M(state_level_idxs, training_points, m, g, f,lengthscale = lengthscale, theta_G = theta_G, regularizer = M_reg, test_ratio=test_ratio, warp_loss_= wrap_function_, wrapping_fun = wrapping_function)
+        res = minimize( optimizer , param_m0, bounds= bounds, method= "L-BFGS-B", tol = 1e-12, options = options)
+        # res = least_squares( optimizer , param_m0, ftol = 1e-12, bounds= bounds, method= "trf", loss = "arctan")
         param_m0 = res.x
         parameters_per_state_level.append(optimizer.best_params) # omit the last one
 
@@ -1376,7 +1384,10 @@ def batchOptimization_(layer_idxs, unique_state_values, points_used_for_training
 
     return f_parameters_per_building_layer_height, g_parameters_per_building_layer_height, m_parameters_per_building_layer_height, all_training_times_per_state
 
-def batchOptimization(states, points_used_for_training, m : mTerm, f : fTerm, g : gTerm, param_m0 : np.ndarray, param_f0 : np.ndarray, param_g0 : np.ndarray, bounds_m : tuple, bounds_f : tuple, bounds_g : tuple, M_reg : int, F_reg : int, G_reg : int, epochs = 2, verbose = True, perturbation_magnitude = 0.1):
+def batchOptimization(states, points_used_for_training, m : mTerm, f : fTerm, g : gTerm, param_m0 : np.ndarray, 
+    param_f0 : np.ndarray, param_g0 : np.ndarray, bounds_m : tuple, bounds_f : tuple, bounds_g : tuple, 
+    M_reg : int, F_reg : int, G_reg : int, epochs = 2, verbose = True, perturbation_magnitude = 0.1, wrap_function_ = True, wrapping_function = np.arctan):
+
 
     excited_points = [ p for p in points_used_for_training if len(p.input_idxs)>0]
     g_parameters_per_building_layer_height = []
@@ -1403,7 +1414,7 @@ def batchOptimization(states, points_used_for_training, m : mTerm, f : fTerm, g 
         ipCoefModel = modelsForInputCoefs(theta_G, states)
         
         # optimize M
-        theta_M, param_m0 = optimizeM( m,f, g, states, points_used_for_training, param_m0 = param_m0,gCoefModel = ipCoefModel, lengthscaleModel = lengthscaleModel, bounds = bounds_m, M_reg = M_reg)
+        theta_M, param_m0 = optimizeM( m,f, g, states, points_used_for_training, param_m0 = param_m0,gCoefModel = ipCoefModel, lengthscaleModel = lengthscaleModel, bounds = bounds_m, M_reg = M_reg, wrap_function_=wrap_function_, wrapping_function=wrapping_function)
 
         elapsed = time.time() - t
         

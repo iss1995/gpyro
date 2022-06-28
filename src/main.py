@@ -106,6 +106,8 @@ def main(save_plots_ = False, seed = 0):
     m = onopt.mTerm(neighbors = neighbor_list ,params = opt_kwargs["param_m0"])
 
     # f_parameters_per_building_layer_height, g_parameters_per_building_layer_height, m_parameters_per_building_layer_height, all_training_times_per_state = onopt.onlineOptimization(layer_idxs, states, points_used_for_training, **kwargs )
+    wrapping_fun = lambda x: 2*(np.sqrt(1+x)-1) 
+    opt_kwargs["wrapping_function"] = wrapping_fun
     f_parameters_per_building_layer_height, g_parameters_per_building_layer_height, m_parameters_per_building_layer_height, all_training_times_per_state = onopt.batchOptimization(states, points_used_for_training, m , f, g, **opt_kwargs )
 
     print(f"Mean Training time per state {np.mean(all_training_times_per_state)}")
@@ -156,6 +158,7 @@ def main(save_plots_ = False, seed = 0):
     ###############################################################################################
     # TODO: check if cuda is available
     # set prefered device for optimization
+    print("Fit GP...")
     models,likelihoods, GP_weights_normalizers, band_nominal_height_tensor, device = onopt.initializeGPModels(parameters,states,device_tp_optimize = 'cpu', output_scale = output_scale, length_mean = length_mean, length_var = length_var)
     #print("GP model optimization starting:")
 
@@ -199,6 +202,8 @@ def main(save_plots_ = False, seed = 0):
     # # importlib.reload(onopt)
     importlib.reload(exu)
 
+    print("Validate with online state propagation...")
+
     g = onopt.gTerm(params = g_repository)
     f = onopt.fTerm(params = f_repository)
     m = onopt.mTerm(neighbors = neighbor_list ,params = m_repository)
@@ -212,7 +217,8 @@ def main(save_plots_ = False, seed = 0):
     all_mean_dtw_distances = []
     pool = None
     try:
-        for (validation_experiment, file_id) in zip(validation_experiments,files_to_evaluate):    
+        for (validation_experiment, file_id) in zip(validation_experiments,files_to_evaluate):  
+            print(f"Evaluating {file_id}")
             all_mean_dtw_distances.append( exu.safe_eval(m, g, f, file_id, validation_experiment, likelihoods, models, GP_weights_normalizers, prc, delay_model , save_plots_ , RESULTS_FOLDER  , starting_point , steps, number_of_concurrent_processes, pool ))
     except Exception as e:
         print(e)

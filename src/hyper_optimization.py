@@ -34,6 +34,7 @@ def main(N = 100,save_plots_ = False):
     ###############################################################################################
     # save_plots_ = True
     print("Post-processing...")
+
     FILES_FOLDER,POINT_TEMPERATURE_FILES,POINT_COORDINATES,TRAJECTORY_FILES,RESULTS_FOLDER,RESULTS_FOLDER_GP,RESULTS_FOLDER_MODEL,d_grid,output_scale,length_mean,length_var,opt_kwargs = config.config()
     FILES_FOLDER = "./Gpyro-TD/"
     prc = preprocessor.preProcessor(FILES_FOLDER,POINT_TEMPERATURE_FILES,POINT_COORDINATES,TRAJECTORY_FILES,RESULTS_FOLDER,subsample = 5)
@@ -103,21 +104,10 @@ def main(N = 100,save_plots_ = False):
     underestimate_lengthscales = 0
     all_training_times_per_state = []
 
-    param_f0 = np.asarray([1.])
-    # bounds_f = scipy.optimize.Bounds([0.05],[np.inf])
-    bounds_f = ([0.05],[np.inf])
-
-    param_m0 = np.asarray([-.1,-.1,-.1, 1])
-    # bounds_m = scipy.optimize.Bounds([-np.inf, -np.inf, -np.inf],[0, 0, 0])
-    bounds_m = ([-np.inf, -np.inf, -np.inf, 0],[0, 0, 0, np.inf])
-
-    param_g0 = np.asarray([0.1,0.1,0.1])
-    # bounds_g = scipy.optimize.Bounds([-np.inf, -np.inf, -np.inf],[np.inf, np.inf, np.inf])
-    bounds_g = ([-np.inf, -np.inf, -np.inf],[np.inf, np.inf, np.inf])
     
     kwargs = {
-        "bounds_f": bounds_f, "bounds_g" : bounds_g, "bounds_m" : bounds_m, "param_f0" : param_f0, "param_g0" : param_g0, 
-        "param_m0" : param_m0,"points_used_for_training" : points_used_for_training, "states" : states,"RESULTS_FOLDER" : RESULTS_FOLDER, 
+        "bounds_f": opt_kwargs["bounds_f"], "bounds_g" : opt_kwargs["bounds_g"], "bounds_m" : opt_kwargs["bounds_m"], "param_f0" : opt_kwargs["param_f0"], "param_g0" : opt_kwargs["param_g0"], 
+        "param_m0" : opt_kwargs["param_m0"],"points_used_for_training" : points_used_for_training, "states" : states,"RESULTS_FOLDER" : RESULTS_FOLDER, 
         "neighbor_list" : neighbor_list, "experiment_ids" : experiment_ids,"prc" : prc 
     }
     obj = objective(kwargs)
@@ -275,6 +265,6 @@ if __name__ == "__main__":
     random.seed(SEED)
 
     warnings.filterwarnings("ignore")
-    N = 1000
+    N = 100
     _ = main(N=N,save_plots_=False)
 # %%
