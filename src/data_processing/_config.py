@@ -51,13 +51,14 @@ def config():
         bounds_f = Bounds([0.05],[np.inf])
         # bounds_f = ([0.05],[np.inf])
 
-        param_m0 = np.asarray([-.1,-.1,-.1, 1])
-        bounds_m = Bounds([-np.inf, -np.inf, -np.inf, 0],[0, 0, 0, np.inf])
-        # bounds_m = ([-np.inf, -np.inf, -np.inf, 0],[0, 0, 0, np.inf])
-
         param_g0 = np.asarray([0.1,0.1,0.1])
         bounds_g = Bounds([-np.inf, -np.inf, -np.inf],[np.inf, np.inf, np.inf])
         # bounds_g = ([-np.inf, -np.inf, -np.inf],[np.inf, np.inf, np.inf])
+
+        param_m0 = np.asarray([-.1,-.1,-.1, 1])
+        # bounds_m = Bounds([-np.inf, -np.inf, -np.inf, 0],[0, 0, 0, np.inf])
+        bounds_m = ([-np.inf, -np.inf, -np.inf, 0],[0, 0, 0, np.inf])
+
         opt_kwargs = {"bounds_f":bounds_f, 
                 "bounds_g":bounds_g, 
                 "bounds_m":bounds_m, 

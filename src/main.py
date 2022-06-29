@@ -106,7 +106,10 @@ def main(save_plots_ = False, seed = 0):
     m = onopt.mTerm(neighbors = neighbor_list ,params = opt_kwargs["param_m0"])
 
     # f_parameters_per_building_layer_height, g_parameters_per_building_layer_height, m_parameters_per_building_layer_height, all_training_times_per_state = onopt.onlineOptimization(layer_idxs, states, points_used_for_training, **kwargs )
-    wrapping_fun = lambda x: 2*(np.sqrt(1+x)-1) 
+    # wrapping_fun = lambda x: 2*(np.sqrt(1+x)-1)  
+    wrapping_fun = np.arctan  
+    wrap_function_ = True
+    opt_kwargs["wrap_function_"] = wrap_function_
     opt_kwargs["wrapping_function"] = wrapping_fun
     f_parameters_per_building_layer_height, g_parameters_per_building_layer_height, m_parameters_per_building_layer_height, all_training_times_per_state = onopt.batchOptimization(states, points_used_for_training, m , f, g, **opt_kwargs )
 

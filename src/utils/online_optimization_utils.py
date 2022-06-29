@@ -357,7 +357,7 @@ class loss_G:
                 Fs[:len(T_node_idx),i] = F_node_idx
 
             # unroll g
-            residuals = self._unrollResponse(Ts,Fs,Hs,idx_train)
+            residuals = self._unrollResponse(Ts,Fs,Hs,idx_train) + self.regularizer * np.linalg.norm(params)
             test_residuals = self._unrollResponse(Ts,Fs,Hs,idx_test)
             if test_residuals < self.best_test_score:
                 self.best_test_score = test_residuals
@@ -536,14 +536,14 @@ def optimizeM( m : mTerm, f : fTerm, g : gTerm, states, training_points,  param_
             point_layer_idxs.append( tmp.astype(np.int64) )
         layer_idxs.append(point_layer_idxs)
     
-    options = {'maxcor': 10, 'gtol': 1e-05, 'eps': 1e-08, 'maxfun': 15000, 'maxiter': 15000, 'iprint': 50, 'maxls': 20, 'finite_diff_rel_step': None}
+    options = {'maxcor': 10, 'gtol': 1e-12, 'eps': 1e-10, 'maxfun': 15000, 'maxiter': 15000, 'iprint': 50, 'maxls': 20, 'finite_diff_rel_step': None}
     parameters_per_state_level = []
     for i,(state_level_idxs,state) in enumerate(zip(layer_idxs,states)):
         lengthscale = lengthscaleModel(state)
         theta_G = gCoefModel(state)
         optimizer = loss_M(state_level_idxs, training_points, m, g, f,lengthscale = lengthscale, theta_G = theta_G, regularizer = M_reg, test_ratio=test_ratio, warp_loss_= wrap_function_, wrapping_fun = wrapping_function)
-        res = minimize( optimizer , param_m0, bounds= bounds, method= "L-BFGS-B", tol = 1e-12, options = options)
-        # res = least_squares( optimizer , param_m0, ftol = 1e-12, bounds= bounds, method= "trf", loss = "arctan")
+        # res = minimize( optimizer , param_m0, bounds= bounds, method= "L-BFGS-B", tol = 1e-12, options = options)
+        res = least_squares( optimizer , param_m0, ftol = 1e-12, bounds= bounds, method= "trf", loss = "arctan")
         param_m0 = res.x
         parameters_per_state_level.append(optimizer.best_params) # omit the last one
 
@@ -1118,6 +1118,9 @@ def objFun(a,x,y):
 
 def objective(e,y): 
     return np.mean( np.abs( (e/np.mean(np.abs(y))))  )
+    # mean_target = np.mean(np.abs(y))
+    # obj_normalizer = np.abs(y) + 0.01*mean_target
+    # return np.mean( np.abs((e / obj_normalizer)) )
 
 def regFun(a, regularizer ):
     return regularizer*np.linalg.norm(a[:-1])
