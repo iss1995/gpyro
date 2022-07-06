@@ -236,5 +236,4 @@ def main(save_plots_ = False, seed = 0):
 # %%
 if __name__ == "__main__":
     SEED = 0
-    _ = main(True,seed = SEED) 
-# %%
+    _ = main(save_plots_= True,seed = SEED) # %%
