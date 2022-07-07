@@ -855,7 +855,8 @@ class GPThetaModel(gpytorch.models.ExactGP):
         super(GPThetaModel, self).__init__(train_x, train_y, likelihood)
         
         lengthscale_prior = gpytorch.priors.NormalPrior(mean_len_prior, var_len_prior) # good results 4/8
-        self.mean_module = bilinearMean(train_x,train_y)
+        self.mean_module = bilinearMean2(1)
+        # self.mean_module = bilinearMean(train_x,train_y)
         self.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.MaternKernel(nu=1.5,lengthscale_prior=lengthscale_prior) )
 
     def forward(self, x):
@@ -1271,6 +1272,32 @@ class bilinearMean(gpytorch.means.Mean):
     
     def neg(self,x,o):
         return self.w_n*x + self.b_n*o
+    
+class bilinearMean2(gpytorch.means.Mean):                                                                                                                                                                        
+    def __init__(self,  input_size, batch_shape=torch.Size(), bias=True):
+
+        super().__init__()
+        # positive 
+        self.positive = gpytorch.means.LinearMean(input_size, batch_shape=batch_shape, bias=bias)
+        # negative
+        self.negative = gpytorch.means.LinearMean(input_size, batch_shape=batch_shape, bias=bias)
+        
+    def forward(self, x):
+
+        sigm_p = self.sigmoid(x)
+        sigm_n = 1 - sigm_p
+
+        # ones = torch.ones_like(x)
+        return ( self.positive(sigm_p*x) + self.negative(sigm_n*x) )
+    
+    def sigmoid(self,x,alpha = 20):
+        return 1/(1+torch.exp(-alpha*x))
+    
+    def pos(self,x):
+        return self.positive(x)
+    
+    def neg(self,x):
+        return self.negative(x)
     
 def onlineOptimization(layer_idxs, unique_state_values, points_used_for_training, bounds_f, bounds_g, bounds_m, F_reg, G_reg, M_reg, param_f0, param_g0, param_m0, on_boundary_, d_grid ):
     """
