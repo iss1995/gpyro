@@ -82,19 +82,19 @@ def  plotGPWeights( likelihoods, models, RESULTS_FOLDER, states = None, device =
             # else:
             ax.set_yticks(yticks)
             ax.set_yticklabels([])
-        else:
-            min_val = np.min( lower.squeeze().cpu().detach().numpy() )
-            max_val = np.max( upper.squeeze().cpu().detach().numpy() )
+        # else:
+        #     min_val = np.min( lower.squeeze().cpu().detach().numpy() )
+        #     max_val = np.max( upper.squeeze().cpu().detach().numpy() )
 
-            dy = np.abs( max_val - min_val )
-            ax.set_ylim( [min_val - 0.01*dy,  max_val + 0.01*dy] )
+        #     dy = np.abs( max_val - min_val )
+        #     ax.set_ylim( [min_val - 0.01*dy,  max_val + 0.01*dy] )
 
         ax.grid(True,alpha = 0.5)
 
         f.tight_layout()
 
         plt.savefig( path + f"{i}_" + id + ".png", bbox_inches='tight',dpi = 180)
-        plt.savefig( path + f"{i}_" + id + ".svg", bbox_inches='tight',dpi = 180)
+        # # plt.savefig( path + f"{i}_" + id + ".svg", bbox_inches='tight',dpi = 180)
         plt.close(f)
 
 def plotWeightsSubplot(likelihoods, models, RESULTS_FOLDER, weights_in_subplot, states = None, device = None, xticks = None, yticks = None, id = "",title = None):
@@ -189,7 +189,7 @@ def plotWeightsSubplot(likelihoods, models, RESULTS_FOLDER, weights_in_subplot, 
     fig.tight_layout(h_pad = 0.)
     # plt.show()
     plt.savefig(path + f"/{id}_weight_subplots.pdf", bbox_inches='tight', dpi = 120)
-    plt.savefig(path + f"/{id}_weight_subplots.svg", bbox_inches='tight', dpi = 120)
+    # plt.savefig(path + f"/{id}_weight_subplots.svg", bbox_inches='tight', dpi = 120)
     plt.close()
     return None
 
@@ -250,7 +250,7 @@ def plotNodeEvolution( T_state_np_central_plate, timestamps, T_state_nominal_np_
         else:
             ax1.set_xticklabels(xtikcs_label)
 
-        plt.savefig(folder_for_node_plots_for_experiment + f"/node_{i}.svg", bbox_inches='tight', dpi = 120)
+        # plt.savefig(folder_for_node_plots_for_experiment + f"/node_{i}.svg", bbox_inches='tight', dpi = 120)
         plt.close()
     return None
 
@@ -311,7 +311,7 @@ def plotNodeUncertainEvolution( T_mean, l_b, u_b, timestamps, T_mean_nominal, RE
             ax1.set_xticklabels(xtikcs_label)
 
 
-        _ = plt.savefig(folder_for_node_plots_for_experiment + f"/node_prob_{i}.svg", bbox_inches='tight', dpi = 120)
+        # _ = plt.savefig(folder_for_node_plots_for_experiment + f"/node_prob_{i}.svg", bbox_inches='tight', dpi = 120)
         _ = plt.savefig(folder_for_node_plots_for_experiment + f"/node_prob_{i}.png", bbox_inches='tight', dpi = 120)
         plt.close()
     
@@ -487,7 +487,7 @@ def plotContour2(field_value,point_locations,steps_to_plot = None,d_grid = 27, r
             ax.set_title(label=title)
 
         plt.savefig(destination_folder + "/" + field_value_name_id + f"_contour2_step_{step}.pdf", bbox_inches = 'tight' , dpi = 120)
-        plt.savefig(destination_folder + "/" + field_value_name_id + f"_contour2_step_{step}.svg", bbox_inches = 'tight' , dpi = 120)
+        # plt.savefig(destination_folder + "/" + field_value_name_id + f"_contour2_step_{step}.svg", bbox_inches = 'tight' , dpi = 120)
         plt.close()
     return None
 

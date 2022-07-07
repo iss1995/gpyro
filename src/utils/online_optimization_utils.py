@@ -854,7 +854,7 @@ class GPThetaModel(gpytorch.models.ExactGP):
     def __init__(self, train_x, train_y, likelihood, mean_len_prior = 0.025, var_len_prior = 0.1):
         super(GPThetaModel, self).__init__(train_x, train_y, likelihood)
         
-        lengthscale_prior = gpytorch.priors.NormalPrior(mean_len_prior, var_len_prior) # good results 4/8
+        lengthscale_prior = gpytorch.priors.NormalPrior(mean_len_prior, var_len_prior) 
         self.mean_module = bilinearMean(train_x,train_y)
         self.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.MaternKernel(nu=1.5,lengthscale_prior=lengthscale_prior) )
 
