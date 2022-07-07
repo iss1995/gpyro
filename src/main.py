@@ -129,21 +129,23 @@ def main(save_plots_ = False, seed = 0):
     g_repository = np.asarray(g_parameters_per_building_layer_height[-1])
     f_repository = np.asarray(f_parameters_per_building_layer_height[-1])[:,None]
 
-    # overwirte elements of g and f where no training data were available. Assign values that will improve GP fit.
+    # overwirte elements of g and f where no training data were available. Assign values that will improve GP 
+    # fit by putting their symmetric values.
     # are you sure it helps? maybe 0 better?
-    states_with_no_excitation = np.where(states <= 0)[0]
+    states_with_no_excitation = np.where(states < 0)[0][::-1]
+    state_with_first_excitation = np.where(states == 0)[0][0]
     # m_repository[states_with_no_excitation[:-1],-1] = m_repository[states_with_no_excitation[-1],-1]
     # g_repository[states_with_no_excitation[:-1],:] = g_repository[states_with_no_excitation[-1],:]
     # f_repository[states_with_no_excitation[:-1],:] = f_repository[states_with_no_excitation[-1],:]
     # m_repository[states_with_no_excitation[:-1],-1] = -m_repository[:states_with_no_excitation[-1],-1]
     # g_repository[states_with_no_excitation[:-1],:] = -g_repository[:states_with_no_excitation[-1],:]
     # f_repository[states_with_no_excitation[:-1],:] = -f_repository[:states_with_no_excitation[-1],:]
-    m_repository[states_with_no_excitation[:-1],-1] = m_repository[states_with_no_excitation[-1],-1] - \
-            (m_repository[:states_with_no_excitation[-1],-1] - m_repository[states_with_no_excitation[-1],-1])
-    g_repository[states_with_no_excitation[:-1],:] = g_repository[states_with_no_excitation[-1],:] -\
-            ( g_repository[:states_with_no_excitation[-1],:] - g_repository[states_with_no_excitation[-1],:] )
-    f_repository[states_with_no_excitation[:-1],:] = f_repository[states_with_no_excitation[-1],:] -\
-            ( f_repository[:states_with_no_excitation[-1],:] - f_repository[states_with_no_excitation[-1],:] )
+    m_repository[states_with_no_excitation,-1] = m_repository[state_with_first_excitation,-1] - \
+            (m_repository[state_with_first_excitation+1:,-1] - m_repository[state_with_first_excitation,-1])
+    g_repository[states_with_no_excitation,:] = g_repository[state_with_first_excitation,:] -\
+            ( g_repository[state_with_first_excitation+1:,:] - g_repository[state_with_first_excitation,:] )
+    f_repository[states_with_no_excitation,:] = f_repository[state_with_first_excitation,:] -\
+            ( f_repository[state_with_first_excitation+1:,:] - f_repository[state_with_first_excitation,:] )
 
     # overwrite input coefs for not activated elemets
     # m_repository[0,-1] = m_repository[-1,-1]
@@ -218,7 +220,7 @@ def main(save_plots_ = False, seed = 0):
     experiment_range = np.arange(2,len(experiment_ids))
     files_to_evaluate = [f"T{i}" for i in experiment_range]
     # files_to_evaluate = [f"T26"]
-    validation_experiments = [prc.experiments[experiment_to_use] for experiment_to_use in experiment_range if prc.experiments[experiment_to_use].experiment_id in files_to_evaluate]
+    validation_experiments = [exp for exp in prc.experiments if exp.experiment_id in files_to_evaluate]
 
     # put files in order
     files_to_evaluate = [exp.experiment_id for exp in validation_experiments]

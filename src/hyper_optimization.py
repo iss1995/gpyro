@@ -169,13 +169,20 @@ def evaluate_hyperparamters( hyperparameters, bounds_f, bounds_g, bounds_m, para
 
     # overwirte elements of g and f where no training data were available. Assign values that will improve GP fit.
     # are you sure it helps? maybe 0 better?
-    states_with_no_excitation = np.where(states <= 0)[0]
+    states_with_no_excitation = np.where(states < 0)[0][::-1]
+    state_with_first_excitation = np.where(states == 0)[0][0]
     # m_repository[states_with_no_excitation[:-1],-1] = m_repository[states_with_no_excitation[-1],-1]
     # g_repository[states_with_no_excitation[:-1],:] = g_repository[states_with_no_excitation[-1],:]
     # f_repository[states_with_no_excitation[:-1],:] = f_repository[states_with_no_excitation[-1],:]
-    m_repository[states_with_no_excitation[:-1],-1] = m_repository[states_with_no_excitation[-1],-1]-m_repository[:states_with_no_excitation[-1],-1]
-    g_repository[states_with_no_excitation[:-1],:] = g_repository[states_with_no_excitation[-1],:]-g_repository[:states_with_no_excitation[-1],:]
-    f_repository[states_with_no_excitation[:-1],:] = f_repository[states_with_no_excitation[-1],:]-f_repository[:states_with_no_excitation[-1],:]
+    # m_repository[states_with_no_excitation[:-1],-1] = -m_repository[:states_with_no_excitation[-1],-1]
+    # g_repository[states_with_no_excitation[:-1],:] = -g_repository[:states_with_no_excitation[-1],:]
+    # f_repository[states_with_no_excitation[:-1],:] = -f_repository[:states_with_no_excitation[-1],:]
+    m_repository[states_with_no_excitation,-1] = m_repository[state_with_first_excitation,-1] - \
+            (m_repository[state_with_first_excitation+1:,-1] - m_repository[state_with_first_excitation,-1])
+    g_repository[states_with_no_excitation,:] = g_repository[state_with_first_excitation,:] -\
+            ( g_repository[state_with_first_excitation+1:,:] - g_repository[state_with_first_excitation,:] )
+    f_repository[states_with_no_excitation,:] = f_repository[state_with_first_excitation,:] -\
+            ( f_repository[state_with_first_excitation+1:,:] - f_repository[state_with_first_excitation,:] )
 
     # overwrite input coefs for not activated elemets
     # m_repository[0,-1] = m_repository[-1,-1]
@@ -218,8 +225,11 @@ def evaluate_hyperparamters( hyperparameters, bounds_f, bounds_g, bounds_m, para
 
     experiment_range = np.arange(2,len(experiment_ids))
     files_to_evaluate = [f"T{i}" for i in experiment_range]
-    validation_experiments = [prc.experiments[experiment_to_use] for experiment_to_use in experiment_range]
-    all_mean_dtw_distances = []
+    # files_to_evaluate = [f"T26"]
+    validation_experiments = [exp for exp in prc.experiments if exp.experiment_id in files_to_evaluate]
+
+    # put files in order
+    files_to_evaluate = [exp.experiment_id for exp in validation_experiments]
 
     number_of_concurrent_processes = mp.cpu_count()-1
     all_mean_dtw_distances = []
@@ -244,15 +254,19 @@ class objective:
         self.kwargs = kwargs
 
     def __call__(self,trial):
-        g_reg = trial.suggest_float("g_reg", -2, 0)
+        g_reg = trial.suggest_float("g_reg", -4, -1)
         # g_reg = -5
-        f_reg = trial.suggest_float("f_reg", -6, -4)
+        f_reg = trial.suggest_float("f_reg", -7, -4)
         # f_reg = -3.4917008457058287
-        m_reg = trial.suggest_float("m_reg", -3, -1)
+        m_reg = trial.suggest_float("m_reg", -4, -1)
         # m_reg = -2.298677092036098
-        output_scale = trial.suggest_float("output_scale", -1, 0)
-        length_mean = trial.suggest_float("length_mean", -2, 0)
-        length_var = trial.suggest_float("length_var", -3, -1)
+        output_scale = np.log(0.5)
+        length_mean = np.log(0.1)
+        length_var = np.log(0.05)
+        # output_scale = trial.suggest_float("output_scale", -1, 0)
+        # length_mean = trial.suggest_float("length_mean", -2, 0)
+        # length_var = trial.suggest_float("length_var", -3, -1)
+
 
         hyperparams = (10**g_reg, 10**f_reg, 10**m_reg, 10**output_scale, 10**length_mean, 10**length_var)
         return executeMain(hyperparams, self.kwargs)

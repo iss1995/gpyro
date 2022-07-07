@@ -295,7 +295,7 @@ def plotNodeUncertainEvolution( T_mean, l_b, u_b, timestamps, T_mean_nominal, RE
             ax1.set_xlabel(ylabel)
 
         ax1.set_xlim(x_min, x_max)
-        ax1.set_ylim([min(y_min,0), y_max])
+        ax1.set_ylim([yticks[0], yticks[-1]])
 
         plt.grid(True,alpha = 0.5)
         plt.yticks(yticks)

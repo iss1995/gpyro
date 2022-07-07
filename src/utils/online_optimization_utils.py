@@ -855,8 +855,8 @@ class GPThetaModel(gpytorch.models.ExactGP):
         super(GPThetaModel, self).__init__(train_x, train_y, likelihood)
         
         lengthscale_prior = gpytorch.priors.NormalPrior(mean_len_prior, var_len_prior) # good results 4/8
-        self.mean_module = bilinearMean2(1)
-        # self.mean_module = bilinearMean(train_x,train_y)
+        # self.mean_module = bilinearMean2(1)
+        self.mean_module = bilinearMean(train_x,train_y)
         self.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.MaternKernel(nu=1.5,lengthscale_prior=lengthscale_prior) )
 
     def forward(self, x):
@@ -1191,8 +1191,12 @@ def initializeGPModels( parameters, unique_states, GP_normalizers = None, device
             # print(F"DEBUG {output_scale}")
 
             hypers = {
-            'likelihood.noise_covar.noise': 5e-3 * mean_feature.clone().detach().requires_grad_(True),
+            'likelihood.noise_covar.noise': 1e-3 * mean_feature.clone().detach().requires_grad_(True),
             'covar_module.outputscale': output_scale*mean_feature.clone().detach().requires_grad_(True),
+            # 'mean_module.positive.bias': 0.5,
+            # 'mean_module.positive.weights': 0.1,
+            # 'mean_module.negative.bias': 0.5,
+            # 'mean_module.negative.weights': 0.1
             }
             gp_list[-1].initialize(**hypers)
 
@@ -1288,7 +1292,7 @@ class bilinearMean2(gpytorch.means.Mean):
         sigm_n = 1 - sigm_p
 
         # ones = torch.ones_like(x)
-        return ( self.positive(sigm_p) + self.negative(sigm_n) )
+        return ( self.positive(sigm_p*x) + self.negative(sigm_n*x) )
     
     def sigmoid(self,x,alpha = 20):
         return 1/(1+torch.exp(-alpha*x))
