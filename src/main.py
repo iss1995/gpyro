@@ -138,9 +138,12 @@ def main(save_plots_ = False, seed = 0):
     # m_repository[states_with_no_excitation[:-1],-1] = -m_repository[:states_with_no_excitation[-1],-1]
     # g_repository[states_with_no_excitation[:-1],:] = -g_repository[:states_with_no_excitation[-1],:]
     # f_repository[states_with_no_excitation[:-1],:] = -f_repository[:states_with_no_excitation[-1],:]
-    m_repository[states_with_no_excitation[:-1],-1] = m_repository[states_with_no_excitation[-1],-1]-m_repository[:states_with_no_excitation[-1],-1]
-    g_repository[states_with_no_excitation[:-1],:] = g_repository[states_with_no_excitation[-1],:]-g_repository[:states_with_no_excitation[-1],:]
-    f_repository[states_with_no_excitation[:-1],:] = f_repository[states_with_no_excitation[-1],:]-f_repository[:states_with_no_excitation[-1],:]
+    m_repository[states_with_no_excitation[:-1],-1] = m_repository[states_with_no_excitation[-1],-1] - \
+            (m_repository[:states_with_no_excitation[-1],-1] - m_repository[states_with_no_excitation[-1],-1])
+    g_repository[states_with_no_excitation[:-1],:] = g_repository[states_with_no_excitation[-1],:] -\
+            ( g_repository[:states_with_no_excitation[-1],:] - g_repository[states_with_no_excitation[-1],:] )
+    f_repository[states_with_no_excitation[:-1],:] = f_repository[states_with_no_excitation[-1],:] -\
+            ( f_repository[:states_with_no_excitation[-1],:] - f_repository[states_with_no_excitation[-1],:] )
 
     # overwrite input coefs for not activated elemets
     # m_repository[0,-1] = m_repository[-1,-1]
@@ -195,8 +198,8 @@ def main(save_plots_ = False, seed = 0):
 
     # plot GPs
     if save_plots_: 
-        vis.plotGPWeights( likelihoods, models, RESULTS_FOLDER, states=states, device = None, xticks = None, yticks = [0,0.5,1.0,1.5], id = "",title = None)
-        vis.plotWeightsSubplot(likelihoods, models, RESULTS_FOLDER, states=states, weights_in_subplot = [0,1,2], device = None, xticks = None, yticks = [0,0.5,1.0,1.5], id = "",title = None)
+        vis.plotGPWeights( likelihoods, models, RESULTS_FOLDER, states=states, device = None, xticks = None, id = "",title = None)
+        vis.plotWeightsSubplot(likelihoods, models, RESULTS_FOLDER, states=states, weights_in_subplot = [0,1,2], device = None, xticks = None, id = "",title = None)
 
     # %%
     # Validate with online state propagation

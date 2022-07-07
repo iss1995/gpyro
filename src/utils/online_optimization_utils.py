@@ -497,7 +497,7 @@ def optimizeF( states, excited_points,  param_f0, bounds : tuple or Bounds , f :
         if i == 0:
             first_state_param_f0 = res.x
 
-    param_f0 = first_state_param_f0
+    # param_f0 = first_state_param_f0
 
     ## scale lengthscales
     lengthscales = 10* np.abs(parameters_per_state_level ) * (1-underestimate_lengthscales)
@@ -513,15 +513,15 @@ def optimizeG( f : fTerm, g : gTerm, states, excitations, excited_points, param_
     for i,(state_level_idxs,state) in enumerate(zip(excitations,states)):
         lengthscale = lengthscaleModel(state)
         optimizer = loss_G(state_level_idxs, excited_points, g, f, regularizer = G_reg, lengthscale = lengthscale, test_ratio=test_ratio)
-        res = minimize( optimizer , param_g0, bounds= bounds, method= "L-BFGS-B", tol = 1e-12 )
-        # res = least_squares( optimizer , param_g0, bounds= bounds, ftol = 1e-12, method= "trf", loss = "arctan")
+        # res = minimize( optimizer , param_g0, bounds= bounds, method= "L-BFGS-B", tol = 1e-12 )
+        res = least_squares( optimizer , param_g0, bounds= bounds, ftol = 1e-12, method= "trf", loss = "arctan")
         param_g0 = res.x
         parameters_per_state_level.append(optimizer.best_params) # omit the last one
 
         if i == 0:
             first_state_param_g0 = res.x
 
-    param_g0 = first_state_param_g0
+    # param_g0 = first_state_param_g0
     coefficients = np.asarray(parameters_per_state_level)
     return coefficients, param_g0
 
@@ -854,14 +854,9 @@ class GPThetaModel(gpytorch.models.ExactGP):
     def __init__(self, train_x, train_y, likelihood, mean_len_prior = 0.025, var_len_prior = 0.1):
         super(GPThetaModel, self).__init__(train_x, train_y, likelihood)
         
-<<<<<<< HEAD
-        lengthscale_prior = gpytorch.priors.NormalPrior(mean_len_prior, var_len_prior) 
-        self.mean_module = bilinearMean(train_x,train_y)
-=======
         lengthscale_prior = gpytorch.priors.NormalPrior(mean_len_prior, var_len_prior) # good results 4/8
         self.mean_module = bilinearMean2(1)
         # self.mean_module = bilinearMean(train_x,train_y)
->>>>>>> 395f42d149b23c3ef067b1abcb8a9651e770ec13
         self.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.MaternKernel(nu=1.5,lengthscale_prior=lengthscale_prior) )
 
     def forward(self, x):
@@ -1293,7 +1288,7 @@ class bilinearMean2(gpytorch.means.Mean):
         sigm_n = 1 - sigm_p
 
         # ones = torch.ones_like(x)
-        return ( self.positive(sigm_p*x) + self.negative(sigm_n*x) )
+        return ( self.positive(sigm_p) + self.negative(sigm_n) )
     
     def sigmoid(self,x,alpha = 20):
         return 1/(1+torch.exp(-alpha*x))

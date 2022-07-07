@@ -44,7 +44,7 @@ def config():
         # (G_reg, F_reg, M_reg, output_scale, length_mean, length_var) = (0.08193669809780384, 9.50100715892454e-06, 0.014482733931970656, 0.47306714997437277, 0.19087101032988138, 0.0041883678096251205) # gradient descent
         # (G_reg, F_reg, M_reg, output_scale, length_mean, length_var) = (0.2025730741381932, 3.512553288229271e-06, 0.07020475588025676, 0.5453833163127719, 0.01113564687660983, 0.033583130119869575) # l-bfgs-b 4.75%
         # (G_reg, F_reg, M_reg, output_scale, length_mean, length_var) = (0.01015004806480582, 1.4040897334213959e-06, 0.004896972970802323, 0.2998779995941545, 0.028325828878155296, 0.005791083487117619) # l-bfgs-b gd 2.42%
-        (G_reg, F_reg, M_reg, output_scale, length_mean, length_var) = (0.01, 1.5e-04, 0.005, 0.3, 0.1, 0.005) 
+        (G_reg, F_reg, M_reg, output_scale, length_mean, length_var) = (0.01, 1.5e-05, 0.005, 0.3, 0.1, 0.005) 
         epochs = 3
         underestimate_lengthscales = 0
 
@@ -53,8 +53,8 @@ def config():
         # bounds_f = ([0.05],[np.inf])
 
         param_g0 = np.asarray([0.1,0.1,0.1])
-        bounds_g = Bounds([-np.inf, -np.inf, -np.inf],[np.inf, np.inf, np.inf])
-        # bounds_g = ([-np.inf, -np.inf, -np.inf],[np.inf, np.inf, np.inf])
+        # bounds_g = Bounds([-np.inf, -np.inf, -np.inf],[np.inf, np.inf, np.inf])
+        bounds_g = ([-np.inf, -np.inf, -np.inf],[np.inf, np.inf, np.inf])
 
         param_m0 = np.asarray([-.1,-.1,-.1, 1])
         # bounds_m = Bounds([-np.inf, -np.inf, -np.inf, 0],[0, 0, 0, np.inf])
