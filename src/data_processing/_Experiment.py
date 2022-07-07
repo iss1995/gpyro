@@ -2,7 +2,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib as mpl
-import multiprocessing as mp
+import multiprocessing_on_dill as mp
 import utils.online_optimization_utils as onopt
 import copy
 from numpy.core.numeric import zeros_like

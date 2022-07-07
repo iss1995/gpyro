@@ -252,8 +252,9 @@ def plotNodeEvolution( T_state_np_central_plate, timestamps, T_state_nominal_np_
 
         plt.savefig(folder_for_node_plots_for_experiment + f"/node_{i}.svg", bbox_inches='tight', dpi = 120)
         plt.close()
+    return None
 
-def plotNodeUncertainEvolution( T_mean, l_b, u_b, timestamps, T_mean_nominal, RESULTS_FOLDER ,file, title = None, xlabel = None, ylabel = None, yticks = [0,200,400,600,800,1000], xticks = [0,500,1000,1500,2000], ytikcs_label = None, xtikcs_label = None ):
+def plotNodeUncertainEvolution( T_mean, l_b, u_b, timestamps, T_mean_nominal, RESULTS_FOLDER ,file, title = None, xlabel = None, ylabel = None, yticks = [0,200,400,600,800,1000], xticks = [500,1000,1500,2000], ytikcs_label = None, xtikcs_label = None ):
 
     y_max = np.max(u_b)
     y_min = np.min(l_b)
@@ -293,7 +294,7 @@ def plotNodeUncertainEvolution( T_mean, l_b, u_b, timestamps, T_mean_nominal, RE
         if ylabel is not None:
             ax1.set_xlabel(ylabel)
 
-        ax1.set_xlim([min(x_min,0), x_max])
+        ax1.set_xlim(x_min, x_max)
         ax1.set_ylim([min(y_min,0), y_max])
 
         plt.grid(True,alpha = 0.5)
@@ -309,9 +310,12 @@ def plotNodeUncertainEvolution( T_mean, l_b, u_b, timestamps, T_mean_nominal, RE
         else:
             ax1.set_xticklabels(xtikcs_label)
 
-        plt.savefig(folder_for_node_plots_for_experiment + f"/node_prob_{i}.svg", bbox_inches='tight', dpi = 120)
-        plt.savefig(folder_for_node_plots_for_experiment + f"/node_prob_{i}.png", bbox_inches='tight', dpi = 120)
+
+        _ = plt.savefig(folder_for_node_plots_for_experiment + f"/node_prob_{i}.svg", bbox_inches='tight', dpi = 120)
+        _ = plt.savefig(folder_for_node_plots_for_experiment + f"/node_prob_{i}.png", bbox_inches='tight', dpi = 120)
         plt.close()
+    
+    return None
 
 def plotContourIntrep(field_value,point_locations,steps_to_plot = None,d_grid = 27, result_folder = "results/general_dbging", field_value_name_id = "", title = None, colorbar_scaling = None, grid_dim = 100):
     """
@@ -414,6 +418,7 @@ def plotContourIntrep(field_value,point_locations,steps_to_plot = None,d_grid = 
 
         plt.savefig(destination_folder + "/" + field_value_name_id + f"_contour2_step_{step}.pdf", bbox_inches = 'tight' , dpi = 120)
         plt.close()
+    return None
 
 def plotContour2(field_value,point_locations,steps_to_plot = None,d_grid = 27, result_folder = "results/general_dbging", field_value_name_id = "", title = None, colorbar_scaling = None):
     """
@@ -484,6 +489,7 @@ def plotContour2(field_value,point_locations,steps_to_plot = None,d_grid = 27, r
         plt.savefig(destination_folder + "/" + field_value_name_id + f"_contour2_step_{step}.pdf", bbox_inches = 'tight' , dpi = 120)
         plt.savefig(destination_folder + "/" + field_value_name_id + f"_contour2_step_{step}.svg", bbox_inches = 'tight' , dpi = 120)
         plt.close()
+    return None
 
 if __name__ == "__main__":
     

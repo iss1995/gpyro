@@ -19,8 +19,9 @@ import time
 
 from dtw import *
 
+
 def prepareExtrapolation(validation_experiment : _Experiment, points_used_for_validation : list, delay_model : LinearRegression, likelihoods : gpytorch.likelihoods.LikelihoodList, 
-    gp_models : gpytorch.models.IndependentModelList, GP_scaler : torch.Tensor, f : fTerm, device = None, mean_model = True, samples = 100):
+    gp_models : gpytorch.models.IndependentModelList, GP_scaler : torch.Tensor, f : fTerm, device = None, mean_model = True, samples = 100, pool: mp.Pool or None = None, processes : int = None):
 
     device = setDevice(device)
     n = len(likelihoods.likelihoods)
@@ -50,21 +51,37 @@ def prepareExtrapolation(validation_experiment : _Experiment, points_used_for_va
     models_numbering = np.arange(n)
     if samples == 1:
         infered_coefs_np = infered_coefs_np.squeeze()
-        weights_interpolator = interplWeights(unique_states,models_numbering,infered_coefs_np.T)
-        coefficients, F_sequences, all_excitation_heights, T_ambient = calculatePathValues(points_used_for_validation, delay_model, weights_interpolator, models_numbering, validation_experiment, f)
-
+        coefficients, F_sequences, all_excitation_heights, T_ambient = precalculateExtrapolationValues(unique_states,models_numbering,infered_coefs_np.T,delay_model,validation_experiment,f)
 
     else:
         #TODO: parallelize this block
+
+        unique_states_list = [unique_states for i in range(samples)]
+        models_numbering_list = [models_numbering for i in range(samples)]
+        # points_used_for_validation_list = [points_used_for_validation for i in range(samples)]
+        delay_model_list = [delay_model for i in range(samples)]
+        validation_experiment_list = [validation_experiment for i in range(samples)]
+        f_list = [f for i in range(samples)]
+        if pool is None:
+            if processes is None or processes <1:
+                processes = mp.cpu_count() -1
+
+            with mp.Pool(processes=processes) as pool:
+                out = pool.starmap(precalculateExtrapolationValues, zip(unique_states_list,models_numbering_list,infered_coefs_np,
+                                        delay_model_list,validation_experiment_list,f_list))
+                
+        else:
+            out = pool.starmap(precalculateExtrapolationValues, zip(unique_states_list,models_numbering_list,infered_coefs_np,
+                                                                delay_model_list,validation_experiment_list,f_list))
+
+        # unpacking the output
         coefficients_rep = []
-        input_coefficients_rep = []
         F_sequences_rep = []
         all_excitation_heights_rep = []
         T_ambient_rep = []
-        for coefficient_samples in infered_coefs_np:
-            weights_interpolator = interplWeights(unique_states,models_numbering,coefficient_samples)
-            coefficients_samp, F_sequences_samp, all_excitation_heights_samp, T_ambient_samp = calculatePathValues(points_used_for_validation, delay_model, weights_interpolator, models_numbering, validation_experiment, f)        
-
+        for val in out:
+     
+            coefficients_samp, F_sequences_samp, all_excitation_heights_samp, T_ambient_samp = val
             coefficients_rep.append(coefficients_samp)
             F_sequences_rep.append(F_sequences_samp)
             all_excitation_heights_rep.append(all_excitation_heights_samp)
@@ -77,10 +94,16 @@ def prepareExtrapolation(validation_experiment : _Experiment, points_used_for_va
 
     return coefficients, F_sequences, all_excitation_heights, T_ambient
 
+def precalculateExtrapolationValues(unique_states,models_numbering,coefficient_samples,delay_model,validation_experiment,f):
+    weights_interpolator = interplWeights(unique_states,models_numbering,coefficient_samples)
+    coefficients_samp, F_sequences_samp, all_excitation_heights_samp, T_ambient_samp = calculatePathValues(delay_model, weights_interpolator, models_numbering, validation_experiment, f)        
+
+    return coefficients_samp, F_sequences_samp, all_excitation_heights_samp, T_ambient_samp
+
 def interplWeights(unique_states,model_number,weight_values):
     return interp2d(unique_states,model_number,weight_values.T)
 
-def calculatePathValues(points_used_for_validation, delay_model, weights_interpolator, models_arange, validation_experiment, f : onopt.fTerm):
+def calculatePathValues( delay_model, weights_interpolator, models_arange, validation_experiment, f : onopt.fTerm):
     Fsequence_repository = []
     excited_nodes_ = []
     coefficient_repository = []
@@ -88,6 +111,7 @@ def calculatePathValues(points_used_for_validation, delay_model, weights_interpo
     all_lengthscales = []
     all_peak_idxs = []
     array_length = 0
+    points_used_for_validation = validation_experiment.Points
     for p in points_used_for_validation:
 
         array_length = np.max([np.max(p.T_t_use.shape),array_length])
@@ -195,7 +219,9 @@ def propabilisticExtrapolation( validation_experiment : _Experiment, points_used
     GP_scaler = GP_scaler,
     mean_model = mean_model, 
     samples=samples, 
-    device = device)
+    device = device,
+    processes=number_of_concurrent_processes,
+    pool = pool)
 
     all_elaspsed = []
     if mean_model:
@@ -521,6 +547,7 @@ def eval( m : mTerm, g : gTerm, f : fTerm, file_to_evaluate : str, validation_ex
         (*_, node)  = in_i
         distance_i, distance_std, distance_min, distance_max = result
         all_mean_T_distances[i] = distance_i
+    ins = []
 
     # t5 = time.time()
     # print(f"\tElpsed 4 {t5 -t4}")
@@ -533,7 +560,8 @@ def eval( m : mTerm, g : gTerm, f : fTerm, file_to_evaluate : str, validation_ex
     all_extrapolation_times.append(time_elapsed)
 
     if save_plots_:
-        if file == "T26":
+        if file == "T25" or file == "T17":
+        # if 0:
             vis.plotNodeUncertainEvolution( unscaled_responses[:,nodes_to_plot], lb_unscaled[:,nodes_to_plot], ub_unscaled[:,nodes_to_plot], timestamps, unscaled_targets[:,nodes_to_plot], RESULTS_FOLDER ,file )
             # vis.plotNodeEvolution( unscaled_responses, timestamps, unscaled_targets, RESULTS_FOLDER ,file )
 

@@ -214,15 +214,20 @@ def main(save_plots_ = False, seed = 0):
 
     experiment_range = np.arange(2,len(experiment_ids))
     files_to_evaluate = [f"T{i}" for i in experiment_range]
-    validation_experiments = [prc.experiments[experiment_to_use] for experiment_to_use in experiment_range]
+    # files_to_evaluate = [f"T26"]
+    validation_experiments = [prc.experiments[experiment_to_use] for experiment_to_use in experiment_range if prc.experiments[experiment_to_use].experiment_id in files_to_evaluate]
 
+    # put files in order
+    files_to_evaluate = [exp.experiment_id for exp in validation_experiments]
+    
     number_of_concurrent_processes = mp.cpu_count()-1
     all_mean_dtw_distances = []
     pool = None
     try:
         for (validation_experiment, file_id) in zip(validation_experiments,files_to_evaluate):  
             print(f"Evaluating {file_id}")
-            all_mean_dtw_distances.append( exu.safe_eval(m, g, f, file_id, validation_experiment, likelihoods, models, GP_weights_normalizers, prc, delay_model , save_plots_ , RESULTS_FOLDER  , starting_point , steps, number_of_concurrent_processes, pool ))
+            all_mean_dtw_distances.append( exu.eval(m, g, f, file_id, validation_experiment, likelihoods, models, GP_weights_normalizers, prc, delay_model , save_plots_ , RESULTS_FOLDER  , starting_point , steps, number_of_concurrent_processes, pool ))
+            print(f"{file_id} perforrmance {all_mean_dtw_distances[-1]*100:.4f}%")
     except Exception as e:
         print(e)
 
