@@ -108,7 +108,7 @@ def main(N = 100,save_plots_ = False):
     kwargs = {
         "bounds_f": opt_kwargs["bounds_f"], "bounds_g" : opt_kwargs["bounds_g"], "bounds_m" : opt_kwargs["bounds_m"], "param_f0" : opt_kwargs["param_f0"], "param_g0" : opt_kwargs["param_g0"], 
         "param_m0" : opt_kwargs["param_m0"],"points_used_for_training" : points_used_for_training, "states" : states,"RESULTS_FOLDER" : RESULTS_FOLDER, 
-        "neighbor_list" : neighbor_list, "experiment_ids" : experiment_ids,"prc" : prc 
+        "neighbor_list" : neighbor_list, "experiment_ids" : experiment_ids,"prc" : prc ,"epochs" : epochs, "HORIZON" : HORIZON, "underestimate_lengthscales" : underestimate_lengthscales,
     }
     obj = objective(kwargs)
     # Let us minimize the objective function above.
@@ -124,7 +124,7 @@ def main(N = 100,save_plots_ = False):
 
     return None
 
-def evaluate_hyperparamters( hyperparameters, bounds_f, bounds_g, bounds_m, param_f0, param_g0, param_m0, points_used_for_training, states, RESULTS_FOLDER, neighbor_list, experiment_ids, prc, seed = 0 ):
+def evaluate_hyperparamters( hyperparameters, bounds_f, bounds_g, bounds_m, param_f0, param_g0, param_m0, points_used_for_training, states, RESULTS_FOLDER, neighbor_list, experiment_ids, prc, seed = 0, epochs = 20, HORIZON = 1, underestimate_lengthscales = 0 ):
     save_plots_ = False
     (G_reg, F_reg, M_reg, output_scale, length_mean, length_var) = hyperparameters
 
@@ -132,7 +132,6 @@ def evaluate_hyperparamters( hyperparameters, bounds_f, bounds_g, bounds_m, para
     torch.manual_seed(seed)
     random.seed(seed)
     
-    epochs = 3
     g = onopt.gTerm(params = param_g0)
     f = onopt.fTerm(params = param_f0)
     m = onopt.mTerm(neighbors = neighbor_list ,params = param_m0)
