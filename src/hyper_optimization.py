@@ -96,14 +96,9 @@ def main(N = 100,save_plots_ = False):
     # %%
     # optimization
     ####################################################################################################
-    # import importlib
-    # importlib.reload(onopt)
 
-
-    epochs = 1
+    epochs = 20
     underestimate_lengthscales = 0
-    all_training_times_per_state = []
-
     
     kwargs = {
         "bounds_f": opt_kwargs["bounds_f"], "bounds_g" : opt_kwargs["bounds_g"], "bounds_m" : opt_kwargs["bounds_m"], "param_f0" : opt_kwargs["param_f0"], "param_g0" : opt_kwargs["param_g0"], 
@@ -236,7 +231,11 @@ def evaluate_hyperparamters( hyperparameters, bounds_f, bounds_g, bounds_m, para
     pool = None
     try:
         for (validation_experiment, file_id) in zip(validation_experiments,files_to_evaluate):    
-            all_mean_dtw_distances.append( exu.safe_eval(m, g, f, file_id, validation_experiment, likelihoods, models, GP_weights_normalizers, prc, delay_model , save_plots_ , RESULTS_FOLDER  , starting_point , steps, number_of_concurrent_processes, pool ))
+            res = exu.safe_eval(m, g, f, file_id, validation_experiment, likelihoods, models, GP_weights_normalizers, prc, delay_model , save_plots_ , RESULTS_FOLDER  , starting_point , steps, number_of_concurrent_processes, pool )
+            all_mean_dtw_distances.append( res )
+            if res>0.15:
+                print(f"{file_id} has a mean DTW distance of {res}>0.15. Breaking current validation.")
+                break
     except Exception as e:
         print(e)
 
@@ -253,21 +252,21 @@ class objective:
         self.kwargs = kwargs
 
     def __call__(self,trial):
-        g_reg = trial.suggest_float("g_reg", -4, -1)
+        g_reg = trial.suggest_float("g_reg", -1.5, -1)
         # g_reg = -5
-        f_reg = trial.suggest_float("f_reg", -7, -4)
+        f_reg = trial.suggest_float("f_reg", -5.5, -5.0)
         # f_reg = -3.4917008457058287
-        m_reg = trial.suggest_float("m_reg", -4, -1)
+        m_reg = trial.suggest_float("m_reg", -1.25, -0.75)
         # m_reg = -2.298677092036098
-        output_scale = np.log(0.5)
-        length_mean = np.log(0.1)
-        length_var = np.log(0.05)
+        output_scale = 0.5
+        length_mean = 0.1
+        length_var = 0.05
         # output_scale = trial.suggest_float("output_scale", -1, 0)
         # length_mean = trial.suggest_float("length_mean", -2, 0)
         # length_var = trial.suggest_float("length_var", -3, -1)
 
 
-        hyperparams = (10**g_reg, 10**f_reg, 10**m_reg, 10**output_scale, 10**length_mean, 10**length_var)
+        hyperparams = (10**g_reg, 10**f_reg, 10**m_reg, output_scale, length_mean, length_var)
         return executeMain(hyperparams, self.kwargs)
 
 if __name__ == "__main__":
@@ -278,6 +277,6 @@ if __name__ == "__main__":
     random.seed(SEED)
 
     warnings.filterwarnings("ignore")
-    N = 100
+    N = 200
     _ = main(N=N,save_plots_=False)
 # %%
