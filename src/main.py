@@ -219,7 +219,7 @@ def main(save_plots_ = False, seed = 0):
 
     experiment_range = np.arange(2,len(experiment_ids))
     files_to_evaluate = [f"T{i}" for i in experiment_range]
-    # files_to_evaluate = [f"T26"]
+    files_to_evaluate = ["T17","T25"]
     validation_experiments = [exp for exp in prc.experiments if exp.experiment_id in files_to_evaluate]
 
     # put files in order

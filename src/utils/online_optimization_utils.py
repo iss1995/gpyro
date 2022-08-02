@@ -400,7 +400,7 @@ class loss_M:
         self.regularizer = regularizer
         self.N = N
         self._createFeatureTargets(test_ratio,random_state)
-        self.min_test_loss = 1e10
+        self.best_test_score = 1e10
         self.best_params = None
         self.grad_relaxation = grad_relaxation
         if warp_loss_:
@@ -429,9 +429,9 @@ class loss_M:
         else:
             assert 1, "N>1 not implemented."
 
-        if test_loss<self.min_test_loss:
+        if test_loss<self.best_test_score:
             self.best_params = params
-            self.min_test_loss = test_loss
+            self.best_test_score = test_loss
     
         return self.warp_loss( loss ) 
     
@@ -510,20 +510,22 @@ def optimizeG( f : fTerm, g : gTerm, states, excitations, excited_points, param_
     #  learn G
     ## learn the lengthscale
     parameters_per_state_level = []
+    fun_scores_per_state_level = []
     for i,(state_level_idxs,state) in enumerate(zip(excitations,states)):
         lengthscale = lengthscaleModel(state)
         optimizer = loss_G(state_level_idxs, excited_points, g, f, regularizer = G_reg, lengthscale = lengthscale, test_ratio=test_ratio)
-        # res = minimize( optimizer , param_g0, bounds= bounds, method= "L-BFGS-B", tol = 1e-12 )
-        res = least_squares( optimizer , param_g0, bounds= bounds, ftol = 1e-12, method= "trf", loss = "arctan")
+        res = minimize( optimizer , param_g0, bounds= bounds, method= "L-BFGS-B", tol = 1e-12 )
+        # res = least_squares( optimizer , param_g0, bounds= bounds, ftol = 1e-12, method= "trf", loss = "arctan")
         param_g0 = res.x
         parameters_per_state_level.append(optimizer.best_params) # omit the last one
-
+        fun_scores_per_state_level.append(optimizer.best_test_score)
         if i == 0:
             first_state_param_g0 = res.x
 
     # param_g0 = first_state_param_g0
     coefficients = np.asarray(parameters_per_state_level)
-    return coefficients, param_g0
+    fun_scores = np.asarray(fun_scores_per_state_level)
+    return coefficients, param_g0, fun_scores
 
 def optimizeM( m : mTerm, f : fTerm, g : gTerm, states, training_points,  param_m0, lengthscaleModel : interp1d, gCoefModel : interp1d, bounds: tuple or Bounds , M_reg = 1e-2,test_ratio = 0.25, wrapping_function = np.arctan, wrap_function_ = False):
     
@@ -538,6 +540,7 @@ def optimizeM( m : mTerm, f : fTerm, g : gTerm, states, training_points,  param_
     
     options = {'maxcor': 10, 'gtol': 1e-12, 'eps': 1e-10, 'maxfun': 15000, 'maxiter': 15000, 'iprint': 50, 'maxls': 20, 'finite_diff_rel_step': None}
     parameters_per_state_level = []
+    fun_scores_per_state_level = []
     for i,(state_level_idxs,state) in enumerate(zip(layer_idxs,states)):
         lengthscale = lengthscaleModel(state)
         theta_G = gCoefModel(state)
@@ -546,13 +549,14 @@ def optimizeM( m : mTerm, f : fTerm, g : gTerm, states, training_points,  param_
         res = least_squares( optimizer , param_m0, ftol = 1e-12, bounds= bounds, method= "trf", loss = "arctan")
         param_m0 = res.x
         parameters_per_state_level.append(optimizer.best_params) # omit the last one
-
+        fun_scores_per_state_level.append(optimizer.best_test_score)
         if i == 0:
             first_state_param_m0 = res.x
 
     param_m0 = first_state_param_m0
     coefficients = np.asarray(parameters_per_state_level)
-    return coefficients, param_m0
+    fun_scores = np.asarray(fun_scores_per_state_level)
+    return coefficients, param_m0, fun_scores
 
 def learnG( states, excitations, lengthscaleModel, excited_points, bounds, regularizer, param_g0):
 
@@ -1418,6 +1422,17 @@ def batchOptimization_(layer_idxs, unique_state_values, points_used_for_training
 
     return f_parameters_per_building_layer_height, g_parameters_per_building_layer_height, m_parameters_per_building_layer_height, all_training_times_per_state
 
+# function that accepts three arrays and returns the third array 
+def compareWithPast(prev_best_score, current_score, best_params, current_params):
+    if len(prev_best_score)==0:
+        prev_best_score = current_score.copy()
+        best_params = current_params.copy()
+    else:
+        change_ = prev_best_score > current_score
+        prev_best_score[change_] = current_score[change_]
+        best_params[change_,:] = current_params[change_,:] 
+    return best_params, prev_best_score 
+
 def batchOptimization(states, points_used_for_training, m : mTerm, f : fTerm, g : gTerm, param_m0 : np.ndarray, 
     param_f0 : np.ndarray, param_g0 : np.ndarray, bounds_m : tuple, bounds_f : tuple, bounds_g : tuple, 
     M_reg : int, F_reg : int, G_reg : int, epochs = 2, verbose = True, perturbation_magnitude = 0.1, wrap_function_ = True, wrapping_function = np.arctan):
@@ -1427,6 +1442,12 @@ def batchOptimization(states, points_used_for_training, m : mTerm, f : fTerm, g 
     g_parameters_per_building_layer_height = []
     f_parameters_per_building_layer_height = []
     m_parameters_per_building_layer_height = []
+
+    g_best_scores_per_building_layer_height = np.asarray([])
+    m_best_scores_per_building_layer_height = np.asarray([])
+    theta_G = np.asarray([])
+    theta_M = np.asarray([])
+
     all_training_times_per_state = []
     for epoch in range(epochs):
         if verbose:
@@ -1444,11 +1465,21 @@ def batchOptimization(states, points_used_for_training, m : mTerm, f : fTerm, g 
         f.update(theta_F)
         
         # optimize G
-        theta_G, param_g0 = optimizeG( f, g, states, excitations, excited_points, param_g0, lengthscaleModel, bounds_g, G_reg = G_reg)
+        theta_G_new, param_g0, fun_scores_g = optimizeG( f, g, states, excitations, excited_points, param_g0, lengthscaleModel, bounds_g, G_reg = G_reg)
+        theta_G, g_best_scores_per_building_layer_height = compareWithPast(g_best_scores_per_building_layer_height, fun_scores_g, theta_G, theta_G_new)
         ipCoefModel = modelsForInputCoefs(theta_G, states)
         
         # optimize M
-        theta_M, param_m0 = optimizeM( m,f, g, states, points_used_for_training, param_m0 = param_m0,gCoefModel = ipCoefModel, lengthscaleModel = lengthscaleModel, bounds = bounds_m, M_reg = M_reg, wrap_function_=wrap_function_, wrapping_function=wrapping_function)
+        theta_M_new, param_m0, fun_scores_m = optimizeM( m,f, g, states, points_used_for_training, param_m0 = param_m0,gCoefModel = ipCoefModel, lengthscaleModel = lengthscaleModel, bounds = bounds_m, M_reg = M_reg, wrap_function_=wrap_function_, wrapping_function=wrapping_function)
+        theta_M, m_best_scores_per_building_layer_height = compareWithPast(m_best_scores_per_building_layer_height, fun_scores_m, theta_M, theta_M_new)
+
+        # keep the best params
+        if len(m_best_scores_per_building_layer_height)==0:
+            m_best_scores_per_building_layer_height = fun_scores_m
+            theta_M = theta_M_new.copy()
+        else:
+            change_ = m_best_scores_per_building_layer_height > fun_scores_m
+            theta_M[change_,:] = theta_M_new[change_,:] 
 
         elapsed = time.time() - t
         
