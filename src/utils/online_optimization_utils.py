@@ -1,3 +1,4 @@
+import statistics
 from urllib import response
 from cv2 import Laplacian, sepFilter2D
 import numpy as np
@@ -291,7 +292,7 @@ class loss_F:
         return residuals
 
 class loss_G:
-    def __init__(self, state_excitation_idxs, excited_points, g :gTerm, f:fTerm, lengthscale = 10, regularizer = 1e-2, parameter_scale = 1, test_ratio = 0.25) -> None:
+    def __init__(self, state_excitation_idxs, excited_points, g :gTerm, f:fTerm, lengthscale = 10, regularizer = 1e-2, parameter_scale = 1, test_ratio = 0.) -> None:
        
         self.state_excitation_idxs = state_excitation_idxs
         self.g = g 
@@ -344,8 +345,12 @@ class loss_G:
 
         # create feature matrix
         if max_length>0:
-            idx_train,idx_test = train_test_split( np.arange(len(all_f)), test_size=self.test_ratio )
-
+            if self.test_ratio>0:
+                idx_train,idx_test = train_test_split( np.arange(len(all_f)), test_size=self.test_ratio, shuffle=True )
+            else:
+                rng = np.random.default_rng()
+                idx_train = rng.choice(len(all_f), int(len(all_f)*(1-self.test_ratio)), replace=False)
+                idx_test = []
             # zero padding for training sequences with less than max_length elements 
             Ts = np.zeros(( max_length, len(all_f)))
             Hs = np.zeros_like(Ts)
@@ -358,10 +363,16 @@ class loss_G:
 
             # unroll g
             residuals = self._unrollResponse(Ts,Fs,Hs,idx_train) + self.regularizer * np.linalg.norm(params)
-            test_residuals = self._unrollResponse(Ts,Fs,Hs,idx_test)
+            if len(idx_test)>0:
+                test_residuals = self._unrollResponse(Ts,Fs,Hs,idx_test)
+            else:
+                test_residuals = self._unrollResponse(Ts,Fs,Hs,idx_train) 
+            
+            # print(f"DBG mean_excitation_idx {np.mean([np.mean(idxs) for idxs in self.state_excitation_idxs])}: train_residuals: {residuals} test_residuals: {test_residuals}")
             if test_residuals < self.best_test_score:
                 self.best_test_score = test_residuals
                 self.best_params = params 
+        
         else:
             self.best_params = params*0. 
             residuals = 0.
@@ -373,13 +384,18 @@ class loss_G:
         return None
 
     def _unrollResponse(self,Ts,Fs,Hs,node_idx_pairs) -> float:
+        
         response = Ts[ 0, node_idx_pairs]
         history = [response]
         for (f_s, h_s) in zip( Fs[:,node_idx_pairs], Hs[:,node_idx_pairs]):
             response += f_s * self.g(h_s, response)
             history.append(response)
 
-        error = np.asarray(history[:-1]) - Ts[ :, node_idx_pairs]
+        # if Ts is 0 (excitation interval finished), then history is 0 too
+        history = np.vstack(history)[:-1,:]
+        history[np.where(Ts[:,node_idx_pairs]==0)] = 0
+
+        error = history - Ts[ :, node_idx_pairs]
         residuals = np.mean( (error / np.abs( Ts[ :, node_idx_pairs] + 1e-4))**2 )
         # residuals = np.mean( (np.hstack(error)/np.mean(np.abs( np.hstack(Ts[ :, node_idx_pairs]))) )**2 )
         return residuals
@@ -407,7 +423,7 @@ class loss_M:
 
             self.warp_loss = lambda x: wrapping_fun(grad_relaxation * x**2)
         else:
-            self.warp_loss = lambda x: grad_relaxation*x
+            self.warp_loss = lambda x: grad_relaxation*x 
     
     def __call__(self, params):
        
@@ -424,8 +440,12 @@ class loss_M:
 
             test_error = self.y[self.test_idxs] - test
 
-            loss = objective(error,self.y[self.train_idxs]) + regFun(params[:-1],self.regularizer)
-            test_loss = objective(test_error,self.y[self.test_idxs])
+            # loss = objective(error,self.y[self.train_idxs]) + regFun(params[:-1],self.regularizer)
+            loss = objective(error,self.y[self.train_idxs]) + regFun(params,self.regularizer)
+            if len(self.test_idxs)>0:
+                test_loss = objective(test_error,self.y[self.test_idxs])
+            else:
+                test_loss = objective(error,self.y[self.train_idxs])
         else:
             assert 1, "N>1 not implemented."
 
@@ -470,8 +490,12 @@ class loss_M:
             
             
         idxs = np.arange(len(self.x)).astype(np.int64)
-        self.train_idxs,self.test_idxs = train_test_split(idxs, test_size = test_size, shuffle = True, random_state = random_state)
-
+        if test_size > 0:
+            self.train_idxs,self.test_idxs = train_test_split(idxs, test_size = test_size, shuffle = True, random_state = random_state)
+        else:
+            rng = np.random.default_rng()
+            self.train_idxs = rng.choice(len(idxs), int(len(idxs)*(1-self.test_ratio)), replace=False)
+            self.test_idxs = []
         return None
 
 
@@ -505,7 +529,7 @@ def optimizeF( states, excited_points,  param_f0, bounds : tuple or Bounds , f :
     ###########################
     return lengthscales, excitations, param_f0
 
-def optimizeG( f : fTerm, g : gTerm, states, excitations, excited_points, param_g0, lengthscaleModel : interp1d, bounds : tuple or Bounds , G_reg = 1e-2 ,test_ratio = 0.25):
+def optimizeG( f : fTerm, g : gTerm, states, excitations, excited_points, param_g0, lengthscaleModel : interp1d, bounds : tuple or Bounds , G_reg = 1e-2 ,test_ratio = 0.0):
     
     #  learn G
     ## learn the lengthscale
@@ -514,9 +538,10 @@ def optimizeG( f : fTerm, g : gTerm, states, excitations, excited_points, param_
     for i,(state_level_idxs,state) in enumerate(zip(excitations,states)):
         lengthscale = lengthscaleModel(state)
         optimizer = loss_G(state_level_idxs, excited_points, g, f, regularizer = G_reg, lengthscale = lengthscale, test_ratio=test_ratio)
-        res = minimize( optimizer , param_g0, bounds= bounds, method= "L-BFGS-B", tol = 1e-12 )
-        # res = least_squares( optimizer , param_g0, bounds= bounds, ftol = 1e-12, method= "trf", loss = "arctan")
-        param_g0 = res.x
+        # res = minimize( optimizer , param_g0, bounds= bounds, method= "L-BFGS-B", tol = 1e-12 )
+        res = least_squares( optimizer , param_g0, bounds= bounds, ftol = 1e-12, method= "trf", loss = "arctan")
+        if not np.all(optimizer.best_params==0):
+            param_g0 = res.x
         parameters_per_state_level.append(optimizer.best_params) # omit the last one
         fun_scores_per_state_level.append(optimizer.best_test_score)
         if i == 0:
@@ -1428,9 +1453,10 @@ def compareWithPast(prev_best_score, current_score, best_params, current_params)
         prev_best_score = current_score.copy()
         best_params = current_params.copy()
     else:
-        change_ = prev_best_score > current_score
-        prev_best_score[change_] = current_score[change_]
-        best_params[change_,:] = current_params[change_,:] 
+        change_ = np.mean(prev_best_score) > np.mean(current_score)
+        if change_:
+            prev_best_score = current_score
+            best_params = current_params 
     return best_params, prev_best_score 
 
 def batchOptimization(states, points_used_for_training, m : mTerm, f : fTerm, g : gTerm, param_m0 : np.ndarray, 
