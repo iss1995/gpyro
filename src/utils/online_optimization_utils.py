@@ -386,10 +386,10 @@ class loss_G:
     def _unrollResponse(self,Ts,Fs,Hs,node_idx_pairs) -> float:
         
         response = Ts[ 0, node_idx_pairs]
-        history = [response]
+        history = [response.copy()]
         for (f_s, h_s) in zip( Fs[:,node_idx_pairs], Hs[:,node_idx_pairs]):
             response += f_s * self.g(h_s, response)
-            history.append(response)
+            history.append(response.copy())
 
         # if Ts is 0 (excitation interval finished), then history is 0 too
         history = np.vstack(history)[:-1,:]
@@ -399,6 +399,16 @@ class loss_G:
         residuals = np.mean( (error / np.abs( Ts[ :, node_idx_pairs] + 1e-4))**2 )
         # residuals = np.mean( (np.hstack(error)/np.mean(np.abs( np.hstack(Ts[ :, node_idx_pairs]))) )**2 )
         return residuals
+    
+    def _dbgResponse(self,range_start, range_end, Ts, history, node_idx_pairs) -> None:
+        for idx_ in range(range_start,range_end,1):
+            plt.figure()
+            T_ = Ts[:,node_idx_pairs[idx_]]
+            plt.plot(T_, label = "nominal")
+            plt.plot(history[:,idx_], label = "predicted")
+            plt.title(idx_)
+        plt.legend()
+        return None
 
 class loss_M:
     def __init__(self, state_level_idxs, training_points, m :mTerm,  g :gTerm, f:fTerm, lengthscale = 10, theta_G = np.array([0,0,0]) , regularizer = 1e-2, N = 1, parameter_scale = 1,test_ratio = 0.25,random_state = 934, warp_loss_ = False, wrapping_fun = np.arctan, grad_relaxation = 0.1) -> None:
