@@ -232,10 +232,12 @@ def evaluate_hyperparamters( hyperparameters, bounds_f, bounds_g, bounds_m, para
     pool = None
     try:
         for (validation_experiment, file_id) in zip(validation_experiments,files_to_evaluate):    
-            res = exu.safe_eval(m, g, f, file_id, validation_experiment, likelihoods, models, GP_weights_normalizers, prc, delay_model , save_plots_ , RESULTS_FOLDER  , starting_point , steps, number_of_concurrent_processes, pool )
+            # res = exu.safe_eval(m, g, f, file_id, validation_experiment, likelihoods, models, GP_weights_normalizers, prc, delay_model , save_plots_ , RESULTS_FOLDER  , starting_point , steps, number_of_concurrent_processes, pool )
+            res = exu.evalNoDTW(m, g, f, file_id, validation_experiment, likelihoods, models, GP_weights_normalizers, prc, delay_model , save_plots_ , RESULTS_FOLDER  , starting_point , steps, number_of_concurrent_processes, pool )
             all_mean_dtw_distances.append( res )
-            if res>0.15:
-                print(f"{file_id} has a mean DTW distance of {res}>0.15. Breaking current validation.")
+            if res>0.20:
+                # print(f"{file_id} has a mean DTW distance of {res}>0.15. Breaking current validation.")
+                print(f"{file_id} has a MARE of {res}>0.2. Breaking current validation.")
                 break
     except Exception as e:
         print(e)
@@ -244,7 +246,8 @@ def evaluate_hyperparamters( hyperparameters, bounds_f, bounds_g, bounds_m, para
     failed_idxs = np.isnan(all_mean_dtw_distances)
 
     T_Mean_error = np.mean(all_mean_dtw_distances[~failed_idxs]) * 100
-    print(f"\nDTW mean relative error: {T_Mean_error}%\n(G_reg, F_reg, M_reg, output_scale, length_mean, length_var) {hyperparameters}"+
+    # print(f"\nDTW mean relative error: {T_Mean_error}%\n(G_reg, F_reg, M_reg, output_scale, length_mean, length_var) {hyperparameters}"+
+    print(f"\nmare: {T_Mean_error}%\n(G_reg, F_reg, M_reg, output_scale, length_mean, length_var) {hyperparameters}"+
     "\n______________________________________________________________________________")
     return T_Mean_error 
 
@@ -253,11 +256,11 @@ class objective:
         self.kwargs = kwargs
 
     def __call__(self,trial):
-        g_reg = trial.suggest_float("g_reg", -1.5, -1)
+        g_reg = trial.suggest_float("g_reg", -4, -1)
         # g_reg = -5
-        f_reg = trial.suggest_float("f_reg", -5.5, -5.0)
+        f_reg = trial.suggest_float("f_reg", -7, -4)
         # f_reg = -3.4917008457058287
-        m_reg = trial.suggest_float("m_reg", -1.25, -0.75)
+        m_reg = trial.suggest_float("m_reg", -3, 0)
         # m_reg = -2.298677092036098
         output_scale = 0.5
         length_mean = 0.1
@@ -278,6 +281,6 @@ if __name__ == "__main__":
     random.seed(SEED)
 
     warnings.filterwarnings("ignore")
-    N = 200
+    N = 100
     _ = main(N=N,save_plots_=False)
 # %%

@@ -232,6 +232,7 @@ def main(save_plots_ = False, seed = 0):
         for (validation_experiment, file_id) in zip(validation_experiments,files_to_evaluate):  
             print(f"Evaluating {file_id}")
             all_mean_dtw_distances.append( exu.eval(m, g, f, file_id, validation_experiment, likelihoods, models, GP_weights_normalizers, prc, delay_model , save_plots_ , RESULTS_FOLDER  , starting_point , steps, number_of_concurrent_processes, pool ))
+            # all_mean_dtw_distances.append( exu.evalNoDTW(m, g, f, file_id, validation_experiment, likelihoods, models, GP_weights_normalizers, prc, delay_model , save_plots_ , RESULTS_FOLDER  , starting_point , steps, number_of_concurrent_processes, pool ))
             print(f"{file_id} perforrmance {all_mean_dtw_distances[-1]*100:.4f}%")
     except Exception as e:
         print(e)

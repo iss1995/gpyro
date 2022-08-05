@@ -579,6 +579,87 @@ def eval( m : mTerm, g : gTerm, f : fTerm, file_to_evaluate : str, validation_ex
 
     return mean_dtw_rel_error
 
+
+def evalNoDTW( m : mTerm, g : gTerm, f : fTerm, file_to_evaluate : str, validation_experiment : _Experiment, 
+    likelihoods : gpytorch.likelihoods.LikelihoodList, models : gpytorch.models.IndependentModelList, GP_weights_normalizers : torch.Tensor, 
+    prc : preProcessor, delay_model : LinearRegression , save_plots_ = False, RESULTS_FOLDER = "./"  , starting_point = 300, steps = 4000, 
+    number_of_concurrent_processes : int or None = None, pool : mp.Pool or None = None):
+    
+    # print(file_to_evaluate)
+    file = file_to_evaluate
+    all_extrapolation_times = []
+
+    # t = time.time()
+    ## for prediction with neighbors' mean temps    
+    mean_extrapolation,validation_experiment,all_elapsed_times = probabilisticPredictionsWrapper(copy(validation_experiment), m, g, f, likelihoods, models, GP_weights_normalizers , starting_idx = 300, steps = 4000, samples = 1, messages = False, mean_model=True, device = "cpu", scaler = copy(prc.scaler), delay_model = delay_model)
+    mean_extrapolation = mean_extrapolation[0]
+    # t1 = time.time()
+    # print(f"\tElpsed 1 {t1 -t}")
+
+    if save_plots_:
+        sampled_extrapolations,*_ = probabilisticPredictionsWrapper(copy(validation_experiment), m, g, f, likelihoods, models, GP_weights_normalizers , starting_idx = 300, steps = 4000, samples = 100, messages = False, scaler = copy(prc.scaler), delay_model = delay_model, process_validation_experiment = False , number_of_concurrent_processes=number_of_concurrent_processes)
+
+        stacked_sampled_extrapolations = np.stack(sampled_extrapolations,axis=0)
+        std_sampled_extrapolations = np.std(stacked_sampled_extrapolations,axis = 0)
+
+        ub = mean_extrapolation + 3*std_sampled_extrapolations
+        lb = mean_extrapolation - 3*std_sampled_extrapolations
+
+    # t2 = time.time()
+    # print(f"\tElpsed 2 {t2 -t1}")
+    T_state_nominal = np.asarray( [p.T_t_use[starting_point:starting_point+steps+1] for p in validation_experiment.Points if p._hasNeighbors_()] ).T
+
+    unscaled_responses = unscale(mean_extrapolation,prc.scaler)
+    unscaled_targets = unscale(T_state_nominal,prc.scaler)
+    if save_plots_:
+        ub_unscaled = unscale(ub,prc.scaler)
+        lb_unscaled = unscale(lb,prc.scaler)
+    timestamps = np.linspace(starting_point, starting_point + len(unscaled_targets),len(unscaled_targets))*0.5
+
+    if len(unscaled_targets)<len(unscaled_responses):
+        unscaled_responses = unscaled_responses[:len(unscaled_targets),:]
+        ub_unscaled = ub_unscaled[:len(unscaled_targets),:]
+        lb_unscaled = lb_unscaled[:len(unscaled_targets),:]
+        timestamps = timestamps[:len(unscaled_targets)]
+
+    # t3 = time.time()
+    # print(f"\tElpsed 3 {t3 -t2}")
+
+    central_plate_points = [p for p in validation_experiment.Points if len(p.neighbor_nodes)==4]
+    T_idxs_to_keep = [True if len(p.neighbor_nodes)==4 else False for p in validation_experiment.Points]
+    T_idxs_to_keep = np.asarray(T_idxs_to_keep)
+
+    nodes_to_plot = [p.node for p in central_plate_points]
+    responses_eval = unscaled_responses[:,T_idxs_to_keep]
+    targets_eval = unscaled_targets[:,T_idxs_to_keep]
+    # all_mean_T_distances = np.abs(mean_extrapolation[:,T_idxs_to_keep] - T_state_nominal[:,T_idxs_to_keep])
+    mare = np.mean( np.abs(responses_eval-targets_eval)/(np.abs(targets_eval))+1e-4 ) # spatial average of mean Distance in timeseries of nodes
+
+    # write performance
+    time_elapsed = np.mean(all_elapsed_times)
+    all_extrapolation_times.append(time_elapsed)
+
+    if save_plots_:
+        if file == "T25" or file == "T17":
+        # if 0:
+            vis.plotNodeUncertainEvolution( unscaled_responses[:,nodes_to_plot], lb_unscaled[:,nodes_to_plot], ub_unscaled[:,nodes_to_plot], timestamps, unscaled_targets[:,nodes_to_plot], RESULTS_FOLDER ,file )
+            # vis.plotNodeEvolution( unscaled_responses, timestamps, unscaled_targets, RESULTS_FOLDER ,file )
+
+            step_to_plot = [1825]
+            point_locations = np.vstack([p.coordinates for p in central_plate_points]).T
+            max_T = max( np.max( unscaled_responses[step_to_plot,:] ), np.max( unscaled_targets[step_to_plot,:] ) )
+            min_T = min( np.min( unscaled_responses[step_to_plot,:] ), np.min( unscaled_targets[step_to_plot,:] ) )
+            colorbar_scaling = np.array([max_T, min_T])
+
+            vis.plotContour2(unscaled_responses[:,T_idxs_to_keep],point_locations,np.array(step_to_plot),d_grid = 27, result_folder = RESULTS_FOLDER, field_value_name_id = "CoarseTemperature_"+ file, colorbar_scaling = colorbar_scaling)
+            vis.plotContour2(unscaled_targets[:,T_idxs_to_keep],point_locations,np.array(step_to_plot),d_grid = 27, result_folder = RESULTS_FOLDER, field_value_name_id = "CoarseNominalTemperature_"+ file, colorbar_scaling = colorbar_scaling)
+
+    # t6 = time.time()
+    # print(f"\tElpsed 4 {t6 -t5}")
+
+    return mare
+
+
 def safe_eval(*ins):
     try:
         out = eval(*ins)

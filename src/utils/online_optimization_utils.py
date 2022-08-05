@@ -504,7 +504,7 @@ class loss_M:
             self.train_idxs,self.test_idxs = train_test_split(idxs, test_size = test_size, shuffle = True, random_state = random_state)
         else:
             rng = np.random.default_rng()
-            self.train_idxs = rng.choice(len(idxs), int(len(idxs)*(1-self.test_ratio)), replace=False)
+            self.train_idxs = rng.choice(len(idxs), int(len(idxs)*(1-test_size)), replace=False)
             self.test_idxs = []
         return None
 
@@ -562,7 +562,7 @@ def optimizeG( f : fTerm, g : gTerm, states, excitations, excited_points, param_
     fun_scores = np.asarray(fun_scores_per_state_level)
     return coefficients, param_g0, fun_scores
 
-def optimizeM( m : mTerm, f : fTerm, g : gTerm, states, training_points,  param_m0, lengthscaleModel : interp1d, gCoefModel : interp1d, bounds: tuple or Bounds , M_reg = 1e-2,test_ratio = 0.25, wrapping_function = np.arctan, wrap_function_ = False):
+def optimizeM( m : mTerm, f : fTerm, g : gTerm, states, training_points,  param_m0, lengthscaleModel : interp1d, gCoefModel : interp1d, bounds: tuple or Bounds , M_reg = 1e-2,test_ratio = 0.0, wrapping_function = np.arctan, wrap_function_ = False):
     
     # find state levels for each point
     layer_idxs = []
