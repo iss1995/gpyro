@@ -12,7 +12,6 @@ from scipy.signal import find_peaks, butter, filtfilt
 from scipy.optimize import minimize
 from numpy.linalg import norm
 from utils.generic_utils import rolling_window,moving_average,checkConcave_
-# from layers.predefined_filters import hankel
 
 font = {'family' : 'sans-serif',
         'weight' : 'normal',
@@ -26,11 +25,18 @@ long_fig = (16,9)
 
 # %% 
 class _Experiment:
-    #TODO: Parent is inheriting the state of the parent at the moment when the self is passed. Afterwards, it is not updated.
-    # It's like having a copy of the current state of your parent, but you don't get the new information added. Fix that. 
-    def __init__(self,Points,Parent_plotter, Timestamps,T_ambient = 250, subsample = 1,id = None, deposition_height_of_non_excited = -0.4, deposition_height_of_boundary = -0.6 ,results_folder = './results/'):
+    def __init__(self, Points : list, Parent_plotter, Timestamps : np.ndarray, T_ambient : float = 250, subsample :int = 1,id : str= None, deposition_height_of_non_excited : float= -0.4, deposition_height_of_boundary : float= -0.6 ,results_folder : str= './results/'):
         """
-        Points -> list of _Point objects
+        Experiment class
+        @params Points : list of Point objects
+        @params Parent_plotter : Plotter object
+        @params Timestamps : timestamps of the measurements
+        @params T_ambient : ambient temperature
+        @params subsample : subsampling factor for the measurements
+        @params id : experiment id
+        @params deposition_height_of_non_excited : hallucinated height of the tool for non excited nodes
+        @params deposition_height_of_boundary : hallucinated height of the tool for boundary nodes
+        @params results_folder : folder where to save the results
         """
         self.results_folder = results_folder
         self.Points = Points
@@ -139,7 +145,6 @@ class _Experiment:
         # compute timesteps and time for each experiment
         
         # first fill the gaps in measurements
-        ##print("Synchronizing trajectories...")
         self._fillGapsInMeas()
 
         # now, find at which node you depoisited last
@@ -157,7 +162,6 @@ class _Experiment:
         nots_to_use = min((nots,nots_on_trajectory))
         self.nots_to_use = nots_to_use
 
-        # self.Time = np.linspace(0,self.Ts*(nots-1),nots)
         self.Time_raw = np.linspace(0,self.Ts*(nots-1),nots)
         self.Time = np.linspace(0,self.Ts*(nots_to_use-1),nots_to_use)
         
@@ -237,6 +241,9 @@ class _Experiment:
         return self.trajectory,self.statuses
 
     def torchCrossingNodes(self):
+        """
+        Check when torch is crossing the counterpart of a node
+        """
         
         idxs_torch_on = np.where(self.statuses == 1)[0]
         trajectory_torch_on = self.trajectory[idxs_torch_on,:]
@@ -375,6 +382,9 @@ class _Experiment:
 
     @staticmethod
     def clearNegativeDelays(input_idxs, relevance_peak_idxs, T_t_use):
+        """
+        keep only the peaks that result in positive delays
+        """
         delays = input_idxs - relevance_peak_idxs
         negative_delays = np.sum(delays<0)
         new_excitation_idxs = copy.copy(input_idxs)
@@ -445,19 +455,13 @@ class _Experiment:
         W = len(relevance)
         relevance_new = relevance * 0
         peak_window_length_new = 3*peak_window_length
-        # #print(f"node: {p.node}")
         for (delayed,normal) in zip(input_idxs,relevance_peak_idxs):
-            # #print(f"\tnormal {normal} vs delayed {delayed}")
 
             idx_set = normal+peak_window_length_new - max(normal-peak_window_length_new,0) 
             idx_edge_d =   min( delayed+peak_window_length_new, W) # for not overflowing
             idx_edge_n =  min( normal+peak_window_length_new, W) # for not overflowing
 
-            # #print(f"\t\tfirst {idx_edge_n - idx_set } second {  idx_edge_d - idx_set  }")
-            
             relevance_new[ idx_edge_d-idx_set : idx_edge_d ] = relevance[ idx_edge_n-idx_set : idx_edge_n ]
-            # idx_set = normal+10 - max(normal-10,0) 
-            # relevance_new[ delayed+10-idx_set : delayed+10 ] = relevance[ normal+10-idx_set : normal+10 ]   
         return relevance_new 
 
     @staticmethod
@@ -472,7 +476,6 @@ class _Experiment:
             max_rel = np.max(relevance)
 
             if max_rel>0.5:
-                # relevance_peaks = {"height" : np.max(relevance_sharp)*0.5, "distance" : 20}
                 # for discriminating between nodes that get excited and those who don't I use an absolute height value 
                 relevance_peaks = {"height" : 0.5, "distance" : 20}   
             else:
@@ -591,12 +594,9 @@ class _Experiment:
         @returns Delta_T : List of lists with the Delta_Ts of neighbors. Array indexing:[a][b]: a -> point, b -> T_point_a-T_point_b
         '''
         points_with_neighbors = [p for p in self.Points if p._hasNeighbors_()]
-        # points_with_neighbors = [p for p in self.Points[54:56]]
         
-        # #print("Forming Raw Inputs...")
         T_t_useS = []
         for point in points_with_neighbors:
-            # #print(f"point : {point.node}")
             _, _, _, T_t_use, *_ = self.formRawInputsWithSynchronousExcitation(point,**synchronizeExcitation_kwargs)
             T_t_useS.append(T_t_use)
         
@@ -637,19 +637,6 @@ class _Experiment:
                 
                 tool_height_trajectory[first_idx:] = height 
         
-        # for i,(height,idx) in enumerate(zip(excitation_tool_heights,relevance_peak_idxs)):
-        #     if i== 0:
-        #         final_idx = int((relevance_peak_idxs[i+1] + idx)/2)
-        #         tool_height_trajectory[:final_idx] = height 
-        #     elif i<W-1:
-        #         final_idx = int((relevance_peak_idxs[i+1] + idx)/2)
-        #         first_idx = int((relevance_peak_idxs[i-1] + idx)/2)
-        #         tool_height_trajectory[first_idx:final_idx] = height 
-        #     else:
-        #         first_idx = int((relevance_peak_idxs[i-1] + idx)/2)
-        #         tool_height_trajectory[first_idx:] = height 
-
-        
         return tool_height_trajectory
 
     def formRawInputsWithSynchronousExcitation(self, point, synchronizeExcitation_kwargs = {}, debug = False, RESULTS_FOLDER = "../results/general_dbging/"):
@@ -687,15 +674,6 @@ class _Experiment:
 
         if debug:
             f = plt.figure(figsize = (16,18))
-
-            # ax = f.add_subplot(211)
-            # ax.plot(tool_height_trajectory,label = "tool height")
-            # ax.plot(point.relevance_coef[::self.subsample],label = "relevance")
-            # ax.plot(relevance_d,label = "delayed relevance")
-            # ax.set_title("Constructed tool height trajectory")
-            # ax.set_ylabel("Height")
-            # ax.set_xlabel("Samples")
-            # ax.legend()
             
             ax1 = f.add_subplot(111)
             ax1.plot(point_T_t,label = "Temperature")
@@ -730,7 +708,6 @@ class _Experiment:
             point_delta_T_ambient = []
             
             point_delta_T_ambient = [point_T_t - ambient]*len(point.hallucinated_nodes)
-            # point_delta_T_ambient = [point_T_t - self.T_ambient[::self.subsample]]*len(point.hallucinated_nodes)
             point_delta_T_ambient += [np.zeros_like(point_T_t)]*(self.max_hallucinated_nodes - len(point.hallucinated_nodes))
             deltaTemps = np.vstack(point_delta_T_ambient)
             
@@ -773,8 +750,6 @@ class _Experiment:
 
         # now subsample all points to use. If you do beforehand then you double subsample stuff
         T_t_use = point_T_t
-        # if not self.evaluation_mode_: 
-        #     point._set_T_t_use_node(T_t_use)
 
         return temps, deltaTemps, inputs, T_t_use, tool_height_trajectory, tool_heights, input_idxs, excitation_idxs, excitation_temperatures, point_delays, relevance, relevance_sharp, delayed_relevance
 
@@ -789,7 +764,6 @@ class _Experiment:
             point._setExcitation_idxs( (point.excitation_idxs/self.subsample).astype(np.int64) )
             point._setExcitation_temperatures( point.T_t_use[ point.excitation_idxs ] )
 
-            # tool_height_trajectory = self.calculateToolDepositionDepth(np.zeros_like(point.T_t_use), point.excitation_idxs, robust_idx )
             tool_height_trajectory = self.calculateToolDepositionDepth(np.ones_like(point.T_t_use)*(self.deposition_height_of_non_excited), point.excitation_idxs )
 
             # special case for nodes on boundary
@@ -801,12 +775,6 @@ class _Experiment:
             
             point._setExcitation_excitationDelayTorchHeightTrajectory(tool_height_trajectory)
             point._setExcitation_TatTheStartOfInput(np.zeros_like(tool_height_trajectory))
-
-            # point._setDeltaTambient( deltaTemps )
-            # point._setInputRawFeatures(inputs)
-            # point._set_T_t_use_node(T_t_use)
-            # point._setInputIdxs(input_idxs)
-            # point._setExcitation_delay(point_delay)
         
         on_boundary_ = onopt.pointsOnBoundaries_(self)
         self.Points = onopt.statesForBoundaries( self.Points ,on_boundary_ )

@@ -58,11 +58,6 @@ def  plotGPWeights( likelihoods, models, RESULTS_FOLDER, states = None, device =
         ax.plot( x_axis, mean, label = "Measured", linewidth = 3,zorder=5)
         ax.fill_between(test_x, lower.squeeze().cpu().detach().numpy(), upper.squeeze().cpu().detach().numpy(), alpha=0.5,zorder=0)
         ax.scatter(tr_x, tr_y, marker = '*', s = 30,color = "black",zorder=10)
-        # # Shade in confidence
-        # ax.legend(['Observed Data', 'Mean', 'Confidence'],loc = "upper left")
-        # ax.set_title(f'Feature {i}')
-        # ax.set_xlabel("State")
-        # ax.set_ylabel("Norm Value")
 
         if title:
             ax.set_title(f"{title} {i}",pad = 2)
@@ -76,25 +71,15 @@ def  plotGPWeights( likelihoods, models, RESULTS_FOLDER, states = None, device =
         if np.any(yticks):
             dy = np.abs(np.max(yticks) - np.min(yticks))
             ax.set_ylim( [yticks[0] - 0.01*dy,  yticks[-1] + 0.01*dy] )
-            # if j%3>0 :
-            #     ax.set_yticks(yticks)
-            #     ax.set_yticklabels([])
-            # else:
+            
             ax.set_yticks(yticks)
             ax.set_yticklabels([])
-        # else:
-        #     min_val = np.min( lower.squeeze().cpu().detach().numpy() )
-        #     max_val = np.max( upper.squeeze().cpu().detach().numpy() )
-
-        #     dy = np.abs( max_val - min_val )
-        #     ax.set_ylim( [min_val - 0.01*dy,  max_val + 0.01*dy] )
 
         ax.grid(True,alpha = 0.5)
 
         f.tight_layout()
 
         plt.savefig( path + f"{i}_" + id + ".png", bbox_inches='tight',dpi = 180)
-        # # plt.savefig( path + f"{i}_" + id + ".svg", bbox_inches='tight',dpi = 180)
         plt.close(f)
 
 def plotWeightsSubplot(likelihoods, models, RESULTS_FOLDER, weights_in_subplot, states = None, device = None, xticks = None, yticks = None, id = "",title = None):
@@ -114,7 +99,6 @@ def plotWeightsSubplot(likelihoods, models, RESULTS_FOLDER, weights_in_subplot, 
         # This contains predictions for both outcomes as a list
         ins = [copy(test_x) for i in range(n)]
         predictions = likelihoods(*models(*ins))
-        # predictions = likelihoods(*models(*[copy(test_x) for i in range(n)]))
 
     path = RESULTS_FOLDER + 'GP_weights/'
     os.makedirs(path, exist_ok = True)
@@ -162,16 +146,6 @@ def plotWeightsSubplot(likelihoods, models, RESULTS_FOLDER, weights_in_subplot, 
             else:
                 ax1.set_yticks(yticks)
 
-        # ax1.grid(True,which = "both",axis = "both",alpha = 0.5)
-        # if j >2:
-        #     # ax1.legend(loc = 4, bbox_to_anchor = (0.2,-0.22,0.82,0.5))
-        #     ax1.set_xlabel("State")
-        # else:
-        #     ax1.set_xticklabels([])
-
-        # if j == 2:
-        #     ax1.set_ylabel("Temperature")
-
         j += 1
 
     big_ax.spines['top'].set_color('none')
@@ -187,9 +161,7 @@ def plotWeightsSubplot(likelihoods, models, RESULTS_FOLDER, weights_in_subplot, 
         ax1.grid(True,alpha = 0.5)
 
     fig.tight_layout(h_pad = 0.)
-    # plt.show()
     plt.savefig(path + f"/{id}_weight_subplots.pdf", bbox_inches='tight', dpi = 120)
-    # plt.savefig(path + f"/{id}_weight_subplots.svg", bbox_inches='tight', dpi = 120)
     plt.close()
     return None
 
@@ -211,11 +183,9 @@ def plotNodeEvolution( T_state_np_central_plate, timestamps, T_state_nominal_np_
 
         fig = plt.figure( figsize=(a4_width*0.45*cm,a4_width*0.45/phi*cm/3) )
         fig.patch.set_facecolor("white")
-        # fig.patch.set_alpha(0)
         x_axis = timestamps
 
         ax1 = fig.add_subplot(111)
-        # ax1.patch.set_alpha(0)
         for axis in ['top', 'bottom', 'left', 'right']:
             ax1.spines[axis].set_linewidth(0.5)
 
@@ -234,10 +204,6 @@ def plotNodeEvolution( T_state_np_central_plate, timestamps, T_state_nominal_np_
         ax1.set_ylim([y_min, y_max])
 
         plt.grid(True,alpha = 0.5)
-        # plt.grid(True,axis = "y")
-        # if i == 22 or i == 48:
-        #     ax1.legend(loc = 4, bbox_to_anchor = (0.2,-0.22,0.82,0.5))
-        #     plt.xticks([])
         plt.yticks(yticks)
         if ytikcs_label is None:
             ax1.set_yticklabels([])
@@ -250,7 +216,6 @@ def plotNodeEvolution( T_state_np_central_plate, timestamps, T_state_nominal_np_
         else:
             ax1.set_xticklabels(xtikcs_label)
 
-        # plt.savefig(folder_for_node_plots_for_experiment + f"/node_{i}.svg", bbox_inches='tight', dpi = 120)
         plt.close()
     return None
 
@@ -343,24 +308,12 @@ def plotContourIntrep(field_value,point_locations,steps_to_plot = None,d_grid = 
     ys_contour = np.column_stack( (ys_contour, ys_contour[:,-1] )) # add extra column for the extra x element
 
     # fill dimensions with interpolated values
-    # x_axis = np.linspace(np.max(xs_contour) - 2*d_grid/3,np.min(xs_contour) + 2*d_grid/3,grid_dim)
-    # y_axis = np.linspace(np.min(ys_contour) + 2*d_grid/3,np.max(ys_contour) - 2*d_grid/3,grid_dim)
     x_axis = np.linspace(np.max(xs_contour),np.min(xs_contour) ,grid_dim)
     y_axis = np.linspace(np.min(ys_contour),np.max(ys_contour) ,grid_dim)
-    # x_axis = np.linspace(np.min(point_locations[0,:]),np.max(point_locations[0,:]),grid_dim)
-    # y_axis = np.linspace(np.min(point_locations[1,:]),np.max(point_locations[1,:]),grid_dim)
 
     all_points = np.vstack(list(product(x_axis,y_axis))).T
     xs_contour_interp = all_points[1,:].reshape(grid_dim,grid_dim)
     ys_contour_interp = all_points[0,:].reshape(grid_dim,grid_dim)
-    # all_points = np.array(list(product(x_axis,y_axis))).T
-    # xs_contour_interp = all_points[0,:].reshape(grid_dim,-1) - d_grid/2/grid_dim
-    # ys_contour_interp = all_points[1,:].reshape(grid_dim,-1) - d_grid/2/grid_dim
-    # xs_contour_interp = np.column_stack( (xs_contour_interp, xs_contour_interp[:,-1] + d_grid/grid_dim)) # add extra element on every row
-    # xs_contour_interp = np.row_stack( (xs_contour_interp, xs_contour_interp[-1,:] )) # add extra row for the extra y element
-    # ys_contour_interp = np.row_stack( ( ys_contour_interp[0,:] + d_grid/grid_dim, ys_contour_interp)) # add extra element on every column
-    # ys_contour_interp = np.column_stack( (ys_contour_interp, ys_contour_interp[:,-1] )) # add extra column for the extra x element
-
 
     # scale colorbar
     if colorbar_scaling is None:
@@ -373,10 +326,7 @@ def plotContourIntrep(field_value,point_locations,steps_to_plot = None,d_grid = 
     # plot for each step
     for step in steps_to_plot:
         field_values_on_step = field_value[step,:]
-        # field_interp_step = interp2d( point_locations[0,:],  point_locations[1,:],field_values_on_step, kind='linear' )
-        # field_values_on_step_interp = field_interp_step(x_axis,y_axis)
         field_values_on_step_interp = griddata(point_locations.T,field_values_on_step,all_points.T, method = "cubic")
-        # print(field_values_on_step_interp.shape)
         field_values_plane_on_step = np.squeeze(field_values_on_step_interp.reshape((grid_dim,-1)))
 
         fig = plt.figure(figsize=(a4_width*cm*0.45,a4_width*cm*0.45))
@@ -404,12 +354,7 @@ def plotContourIntrep(field_value,point_locations,steps_to_plot = None,d_grid = 
             else:
                 ax.scatter(x = point_locations[0,i],y = point_locations[1,i], marker = "x", color = "grey", linewidth = 2, s = 30)
 
-        # ax.set_title(f"Step {step}")
-        # ax.set_xlabel("x (mm)")
-        # ax.set_ylabel("y (mm)")
         cbar = fig.colorbar(the_plot,ax = ax)
-        # cbar.ax.get_yaxis().labelpad = 15
-        # cbar.ax.set_ylabel("", rotation=270)
         plt.xticks([])
         plt.yticks([])
 
@@ -441,10 +386,6 @@ def plotContour2(field_value,point_locations,steps_to_plot = None,d_grid = 27, r
     # build grid locations (coordinates of each tile's corners)
     xs_contour = point_locations[0,:].reshape(int(np.sqrt(field_value.shape[-1] )),-1) - d_grid/2
     ys_contour = point_locations[1,:].reshape(int(np.sqrt(field_value.shape[-1] )),-1) - d_grid/2
-    # xs_contour = np.column_stack( (xs_contour, xs_contour[:,-1] + d_grid)) # add extra element on every row
-    # xs_contour = np.row_stack( (xs_contour, xs_contour[-1,:] )) # add extra row for the extra y element
-    # ys_contour = np.row_stack( ( ys_contour[0,:] + d_grid, ys_contour)) # add extra element on every column
-    # ys_contour = np.column_stack( (ys_contour, ys_contour[:,-1] )) # add extra column for the extra x element
 
     # scale colorbar
     if colorbar_scaling is None:
@@ -478,7 +419,6 @@ def plotContour2(field_value,point_locations,steps_to_plot = None,d_grid = 27, r
         ax.scatter(x = point_locations[0,:] + offset,y = point_locations[1,:] + offset, marker = "x", color = "grey",linewidth = 2, s = 30)
 
         cbar = fig.colorbar(the_plot,ax = ax)
-        # cbar.ax.tick_params(labelsize=80)
 
         plt.xticks([])
         plt.yticks([])
@@ -487,7 +427,6 @@ def plotContour2(field_value,point_locations,steps_to_plot = None,d_grid = 27, r
             ax.set_title(label=title)
 
         plt.savefig(destination_folder + "/" + field_value_name_id + f"_contour2_step_{step}.pdf", bbox_inches = 'tight' , dpi = 120)
-        # plt.savefig(destination_folder + "/" + field_value_name_id + f"_contour2_step_{step}.svg", bbox_inches = 'tight' , dpi = 120)
         plt.close()
     return None
 

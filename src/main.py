@@ -12,6 +12,7 @@ import utils.extrapolation_utils as exu
 import utils.visualizations as vis
 
 from data_processing.preprocessor import preProcessor
+
 from scipy.signal import butter, filtfilt
 from copy import deepcopy as copy
 
@@ -111,7 +112,8 @@ def main(save_plots_ = False, seed = 0):
     wrap_function_ = True
     opt_kwargs["wrap_function_"] = wrap_function_
     opt_kwargs["wrapping_function"] = wrapping_fun
-    f_parameters_per_building_layer_height, g_parameters_per_building_layer_height, m_parameters_per_building_layer_height, all_training_times_per_state = onopt.batchOptimization(states, points_used_for_training, m , f, g, **opt_kwargs )
+    f_parameters_per_building_layer_height, g_parameters_per_building_layer_height, m_parameters_per_building_layer_height, all_training_times_per_state \
+                                        = onopt.batchOptimization(states, points_used_for_training, m , f, g, **opt_kwargs )
 
     print(f"Mean Training time per state {np.mean(all_training_times_per_state)}")
     # %%
@@ -134,12 +136,6 @@ def main(save_plots_ = False, seed = 0):
     # are you sure it helps? maybe 0 better?
     states_with_no_excitation = np.where(states < 0)[0][::-1]
     state_with_first_excitation = np.where(states == 0)[0][0]
-    # m_repository[states_with_no_excitation[:-1],-1] = m_repository[states_with_no_excitation[-1],-1]
-    # g_repository[states_with_no_excitation[:-1],:] = g_repository[states_with_no_excitation[-1],:]
-    # f_repository[states_with_no_excitation[:-1],:] = f_repository[states_with_no_excitation[-1],:]
-    # m_repository[states_with_no_excitation[:-1],-1] = -m_repository[:states_with_no_excitation[-1],-1]
-    # g_repository[states_with_no_excitation[:-1],:] = -g_repository[:states_with_no_excitation[-1],:]
-    # f_repository[states_with_no_excitation[:-1],:] = -f_repository[:states_with_no_excitation[-1],:]
     m_repository[states_with_no_excitation,-1] = m_repository[state_with_first_excitation,-1] - \
             (m_repository[state_with_first_excitation+1:,-1] - m_repository[state_with_first_excitation,-1])
     g_repository[states_with_no_excitation,:] = g_repository[state_with_first_excitation,:] -\

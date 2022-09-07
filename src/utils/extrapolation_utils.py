@@ -1,17 +1,16 @@
 
-from statistics import LinearRegression, linear_regression
+from statistics import LinearRegression
 import numpy as np
-import sklearn
+from sklearn.preprocessing import MinMaxScaler as Scaler
 from data_processing.preprocessor import preProcessor
 from utils.online_optimization_utils import fTerm, gTerm, mTerm
-import utils.generic_utils as gnu
 import utils.online_optimization_utils as onopt
 import utils.visualizations as vis
 import multiprocessing_on_dill as mp
 from data_processing._Experiment import _Experiment
 from copy import deepcopy as copy
 from utils.generic_utils import setDevice
-from scipy.interpolate import interp2d 
+from scipy.interpolate import interp1d,interp2d 
 
 import torch
 import gpytorch
@@ -21,13 +20,31 @@ from dtw import *
 
 
 def prepareExtrapolation(validation_experiment : _Experiment, points_used_for_validation : list, delay_model : LinearRegression, likelihoods : gpytorch.likelihoods.LikelihoodList, 
-    gp_models : gpytorch.models.IndependentModelList, GP_scaler : torch.Tensor, f : fTerm, device = None, mean_model = True, samples = 100, pool: mp.Pool or None = None, processes : int = None):
-
+    gp_models : gpytorch.models.IndependentModelList, GP_scaler : torch.Tensor, f : fTerm, device = None, mean_model_ = True, samples = 100, pool: mp.Pool or None = None, processes : int = None):
+    """
+    Prepare the extrapolation
+    @param validation_experiment: the experiment to extrapolate
+    @param points_used_for_validation: the points to use for extrapolation
+    @param delay_model: the delay model to use
+    @param likelihoods: the likelihoods
+    @param gp_models: the gp models
+    @param GP_scaler: the scaler for the GP models
+    @param f: the f term
+    @param device: the device to use (cuda or cpu)
+    @param mean_model_: whether to only calculate the mean model
+    @param samples: the number of samples to needed approximate the distribution
+    @param pool: the pool to use
+    @param processes: the number of processes to use
+    @return: the extrapolation
+    @return: the extrapolation times
+    """
     device = setDevice(device)
     n = len(likelihoods.likelihoods)
 
     all_states = [p.excitation_delay_torch_height_trajectory for p in points_used_for_validation]
     unique_states =  np.unique(all_states)
+
+    # precalculate the weights for the different states 
     with torch.no_grad(), gpytorch.settings.fast_pred_var():
         unique_states = torch.tensor(unique_states).float().to(device=device)
         GP_scaler = GP_scaler.to(device)
@@ -35,7 +52,7 @@ def prepareExtrapolation(validation_experiment : _Experiment, points_used_for_va
         gp_models = gp_models.to(device=device)
         infered_coefs = likelihoods( *gp_models(*[unique_states for i in range(n)] ) )
         means_np = np.vstack([((model.mean)*scale).squeeze().cpu().detach().numpy() for (model,scale) in zip(infered_coefs,GP_scaler)])
-        if mean_model:
+        if mean_model_:
             infered_coefs_np = means_np
             samples = 1
         else:
@@ -58,7 +75,6 @@ def prepareExtrapolation(validation_experiment : _Experiment, points_used_for_va
 
         unique_states_list = [unique_states for i in range(samples)]
         models_numbering_list = [models_numbering for i in range(samples)]
-        # points_used_for_validation_list = [points_used_for_validation for i in range(samples)]
         delay_model_list = [delay_model for i in range(samples)]
         validation_experiment_list = [validation_experiment for i in range(samples)]
         f_list = [f for i in range(samples)]
@@ -103,7 +119,16 @@ def precalculateExtrapolationValues(unique_states,models_numbering,coefficient_s
 def interplWeights(unique_states,model_number,weight_values):
     return interp2d(unique_states,model_number,weight_values.T)
 
-def calculatePathValues( delay_model, weights_interpolator, models_arange, validation_experiment, f : onopt.fTerm):
+def calculatePathValues( delay_model : interp1d, weights_interpolator : interp2d, models_arange , validation_experiment : _Experiment, f : onopt.fTerm):
+    """
+    Precalculate the values of the extrapolation path for the given experiment and the given delay model
+    @param delay_model: the delay model to use
+    @param weights_interpolator: the interpolator for the weights
+    @param models_arange: the models numbering
+    @param validation_experiment: the experiment to use
+    @param f: the f term to use
+    @return: the coefficients for the extrapolation path, the F sequences, the excitation heights and the ambient temperatures
+    """
     Fsequence_repository = []
     excited_nodes_ = []
     coefficient_repository = []
@@ -181,10 +206,34 @@ def synchronizeWithDtwwrapper(ins):
     return normalized_distance, std_step_cost_increase, min_step_cost_increase, max_step_cost_increase
 
 def probabilisticPredictionsWrapper(validation_experiment : _Experiment, m : mTerm, g : gTerm, f : fTerm, likelihoods : gpytorch.likelihoods.LikelihoodList, gp_models : gpytorch.models.IndependentModelList, GP_scaler : torch.Tensor, 
-starting_idx = 300, steps = 4000, samples = 100, messages = False, mean_model = False, device = "cpu", scaler = None, delay_model = None, process_validation_experiment = True, dt = 0.5, number_of_concurrent_processes = None):
+starting_idx :int = 300, steps :int = 4000, samples :int = 100, messages_ : bool = False, mean_model_ : bool = False, device :str = "cpu", scaler : Scaler or None = None, delay_model : interp1d or None = None, process_validation_experiment_  : bool = True, dt : float = 0.5, number_of_concurrent_processes : int or None= None):
+    """
+    Replicate the thermal fields of a validation experiment using the GP models and the likelihoods
+    @param validation_experiment: the experiment to replicate
+    @param m: the m term
+    @param g: the g term
+    @param f: the f term
+    @param likelihoods: the likelihoods
+    @param gp_models: the gp models
+    @param GP_scaler: the scaler for the GP models
+    @param starting_idx: the starting index of the validation experiment
+    @param steps: the number of steps to replicate
+    @param samples: the number of samples to needed approximate the distribution
+    @param messages_: whether to print messages
+    @param mean_model_: whether to only calculate the mean model
+    @param device: the device to use (cuda or cpu)
+    @param scaler: the scaler to use
+    @param delay_model: the delay model to use
+    @param process_validation_experiment_: whether to process the validation experiment
+    @param dt: the timestep to use
+    @param number_of_concurrent_processes: the number of concurrent processes to use
+    @return: the replicated thermal fields
+    @return: the processed validation experiment
+    @return: extrapolation times
+    """
 
     # pre-process experiment: interpolate torch path, scale measurements, subsample, and find times that torch crosses each node
-    if process_validation_experiment:
+    if process_validation_experiment_:
         _ = validation_experiment.trajectorySynchronization(J = 1,  lengthscale = 10, lengthscale_sharp = 10 )
         _ = validation_experiment.torchCrossingNodes()
 
@@ -200,13 +249,37 @@ starting_idx = 300, steps = 4000, samples = 100, messages = False, mean_model = 
 
     # draw different weights and extrapolate with them
     extrapolations, all_elapsed = propabilisticExtrapolation( validation_experiment, points_used_for_validation, delay_model, m, g, f, likelihoods, gp_models, 
-                        GP_scaler, mean_model, samples, device, messages, starting_idx, steps, dt = dt, number_of_concurrent_processes = number_of_concurrent_processes )
+                        GP_scaler, mean_model_, samples, device, messages_, starting_idx, steps, dt = dt, number_of_concurrent_processes = number_of_concurrent_processes )
     
     return extrapolations,validation_experiment,all_elapsed
 
 def propabilisticExtrapolation( validation_experiment : _Experiment, points_used_for_validation : list, delay_model : LinearRegression, m : mTerm, g : gTerm, f : fTerm, 
-    likelihoods : gpytorch.likelihoods.LikelihoodList, gp_models : gpytorch.models.IndependentModelList, GP_scaler : torch.Tensor, mean_model : bool, samples : int, 
-    device = None , messages = False, starting_idx = 300, steps = 4000, dt = 0.5, number_of_concurrent_processes : int or None = None, pool : mp.Pool or None = None):
+    likelihoods : gpytorch.likelihoods.LikelihoodList, gp_models : gpytorch.models.IndependentModelList, GP_scaler : torch.Tensor, mean_model_ : bool, samples : int, 
+    device = None , messages_ = False, starting_idx = 300, steps = 4000, dt = 0.5, number_of_concurrent_processes : int or None = None, pool : mp.Pool or None = None):
+    """
+    Propabilistic extrapolation of the validation experiment
+    @param validation_experiment: the experiment to extrapolate
+    @param points_used_for_validation: the points used for validation
+    @param delay_model: the delay model to use
+    @param m: the m term
+    @param g: the g term
+    @param f: the f term
+    @param likelihoods: the likelihoods
+    @param gp_models: the gp models
+    @param GP_scaler: the scaler for the GP models
+    @param mean_model_: whether to only calculate the mean model
+    @param samples: the number of samples to needed approximate the distribution
+    @param device: the device to use (cuda or cpu)
+    @param messages_: whether to print messages
+    @param starting_idx: the starting index of the validation experiment
+    @param steps: the number of steps to replicate
+    @param dt: the timestep to use
+    @param number_of_concurrent_processes: the number of concurrent processes to use
+    @param pool: the pool to use
+    @return: the replicated thermal fields
+    @return: the elapsed time
+    """
+    
     # draw different weights and extrapolate with them
     extrapolations = []
     ## prepare extrapolation
@@ -217,14 +290,14 @@ def propabilisticExtrapolation( validation_experiment : _Experiment, points_used
     gp_models = gp_models, 
     f = f,
     GP_scaler = GP_scaler,
-    mean_model = mean_model, 
+    mean_model_ = mean_model_, 
     samples=samples, 
     device = device,
     processes=number_of_concurrent_processes,
     pool = pool)
 
     all_elaspsed = []
-    if mean_model:
+    if mean_model_:
         samples = 1
         coefficients_samp, F_sequences_samp, all_excitation_heights_samp, T_ambient_samp = [coefficients_samp], [F_sequences_samp], [all_excitation_heights_samp], [T_ambient_samp]
     
@@ -232,9 +305,9 @@ def propabilisticExtrapolation( validation_experiment : _Experiment, points_used
 
     ins = []
     for i,(coefficients, F_sequences, all_excitation_heights, T_ambient) in enumerate(zip(coefficients_samp, F_sequences_samp, all_excitation_heights_samp, T_ambient_samp)):
-        ins.append((i, samples, validation_experiment, coefficients, F_sequences, all_excitation_heights, m, g, starting_idx, steps, dt, messages))
+        ins.append((i, samples, validation_experiment, coefficients, F_sequences, all_excitation_heights, m, g, starting_idx, steps, dt, messages_))
 
-    if mean_model or number_of_concurrent_processes == 1:
+    if mean_model_ or number_of_concurrent_processes == 1:
         extrapolations = [unrollPathsWrapper(ins[0])]
     else:
         if pool is None:
@@ -258,8 +331,8 @@ def unrollPathsWrapper(args):
         out = np.NaN
     return out
 
-def unrollPaths( i, samples, validation_experiment, coefficients, F_sequences, all_excitation_heights, m, g, starting_idx = 300, steps = 4000, dt = 0.5, messages = False):
-        if messages:
+def unrollPaths( i, samples, validation_experiment, coefficients, F_sequences, all_excitation_heights, m, g, starting_idx = 300, steps = 4000, dt = 0.5, messages_ = False):
+        if messages_:
             print(f"Sampe {i+1}/{samples}")
 
         ## initialize roll out
@@ -281,165 +354,17 @@ def unrollPaths( i, samples, validation_experiment, coefficients, F_sequences, a
         
         return T_state_np
 
-def extrapolate(statePropagation,coefficients,input_coefficients,all_excitation_heights,Fsequence,T_ambient,T_state_0,starting_idx,num_of_steps):
-    # propagate state
-    steps = num_of_steps
-    T_state = [T_state_0]
-
-    DEBUG_COEFS = []
-    DEBUG_resps = []
-    DEBUG_inputs = []
-
-    for step in range(1,steps+1,1):
-
-        ## pick pre-computed values
-        F = Fsequence[:,starting_idx + step]
-        excitation_heights = all_excitation_heights[:,starting_idx + step]
-        feature_coef = coefficients[:,starting_idx + step,:]
-        ip_feature_coef = input_coefficients[:,starting_idx + step,:]
-        T_last = T_state[-1]
-        T_amb = T_ambient[starting_idx + step]
-
-        ## propagate state
-        new_state, input_feature = statePropagation(
-            T = T_last,
-            T_boundary = T_amb,
-            h = excitation_heights, 
-            g_coef = ip_feature_coef,
-            F = F,
-            dyn_vectors = feature_coef)
-
-        DEBUG_inputs.append(input_feature)
-        T_state.append(new_state)
-
-    DEBUG_COEFS = np.asarray(DEBUG_COEFS)
-
-    DEBUG_resps = np.asarray(DEBUG_resps)
-
-    DEBUG_inputs = np.asarray(DEBUG_inputs)
-
-    return np.vstack(T_state),DEBUG_inputs
-
-class quickStatePropagationWithActivation:
-    def __init__(self,neighbor_nodes, delta_0, delta_1, feature_scaler = 1, d_grid = 27):
-        """
-        neighbor_nodes : list of iterables with neighboring nodes | len() : nop
-        delta_0 : boolean array with selection values for first boundary | shape (nop,)
-        delta_1 : boolean array with selection values for second boundary | shape (nop,)
-        """
-        nop = max(delta_0.shape)
-        self.delta_0 = delta_0
-        self.delta_1 = delta_1
-        self.featureScaler = feature_scaler
-        self.nop = nop
-        self.associated_temperatures = np.zeros((nop,4))
-        self.d_grid = d_grid
-        self.features = np.zeros((nop,5))
-        self.T_bound = np.zeros((nop,))
-        self.T_start = np.zeros((nop,))
-
-        # transform neighboring idxs in tuples (node, node_neighbor)
-        idxs_for_T_array = []
-        idxs_for_associated_T = []
-        coefficients_for_substracting_T = []
-        for node,neighbor_node_group in enumerate(neighbor_nodes):
-            for i,neighbor_node in enumerate(neighbor_node_group):
-                idxs_for_T_array.append(neighbor_node)
-                idxs_for_associated_T.append((node,i))
-            coefficients_for_substracting_T.append(i+1)
-
-        self.neighbor_nodes = neighbor_nodes
-        self.idxs_for_T_array = np.asarray(idxs_for_T_array)
-        self.idxs_for_associated_T = np.asarray(idxs_for_associated_T)
-        self.number_of_neighbors = np.asarray(coefficients_for_substracting_T)
-
-    def __call__(self, T, T_boundary, h, g_coef, F, dyn_vectors):
-        """
-        T  | shape (nop,)
-        T_mean  | shape (nop,)
-        T_boundary  | shape (nop,)
-        input_feature  | shape (nop,)
-        activation_values  | shape (nop,)
-        dyn_vector  | shape (nop,numberof_features)
-        """
-
-        activaation_values = 1 - F
-        self.associated_temperatures[self.idxs_for_associated_T[:,0],self.idxs_for_associated_T[:,1]] = T[self.idxs_for_T_array]
-
-        self.T_bound = (T - T_boundary)*activaation_values
-
-        self.features[:,0] = T*activaation_values
-        self.features[:,1] = (self.number_of_neighbors*T - np.sum(self.associated_temperatures, axis = -1))/(self.d_grid/100)*activaation_values#/ self.d_grid
-        self.features[:,2] = self.T_bound*self.delta_0*activaation_values
-        self.features[:,3] = self.T_bound*self.delta_1*activaation_values
-        G_vals = onopt.G( *g_coef, F = F, h = h,T = T)
-        self.features[:,4] =  G_vals
-
-        DT = np.sum(self.features*dyn_vectors.T/self.featureScaler,axis = -1)
-        return T+DT , G_vals
-
-    def debugLaplacians(self,T):
-        # build differences
-        differences = []
-        for (T_i,neighbors) in zip(T,self.neighbor_nodes):
-            tmp = []
-            for neighb in neighbors:
-                tmp.append(T_i-T[neighb])
-
-            differences.append(tmp)
-
-        # compare
-        lap = (self.number_of_neighbors*T - np.sum(self.associated_temperatures, axis = -1))
-        lap_test = np.asarray( [np.sum(diffs) for diffs in differences] )
-
-        same_ = np.all(lap,lap_test)
-        return same_
-
-def calculateStdsOnCentralPlate(neighbors,temperature_array):
+def synchronizeWithDtw(signal1 : np.ndarray, signal2 : np.ndarray):
     """
-    Calculate standard deviations in T and delta T field without taking the nodes on the boundaries.
-    @params neighbors: list of lists with neighbors. Each sublist contains the neighbors of each node
-    @params temperature array : n x num_of_points_on_grid
+    Synchronizes two signals using dynamic time warping
+    @param signal1: the first signal
+    @param signal2: the second signal
+    @return sync_signal1: signal 1 synchronized (and distorted to fit signal 2)
+    @return sync_signal2: signal 2 synchronized (and distorted to fit signal 1)
+    @return distances between the synchronized signals
     """
-    # select the data in the central part of the plate
-    T_idxs_NOT_to_keep = [False if len(neigbs)==4 else True for neigbs in neighbors]
-    T_idxs_NOT_to_keep = np.asarray(T_idxs_NOT_to_keep)
 
-    # build a matrix where if the (i,j) tile is 1 then i is neighboring j. The Matrix should be symmetric
-    neighborhood = np.zeros((len(neighbors),len(neighbors)))
-    for i,neighbor_idxs in enumerate(neighbors) :
-        for neighb in neighbor_idxs:
-            neighborhood[i,neighb] = 1
-    
-    # screen out results
-    neighborhood_to_keep = neighborhood.copy() 
-    neighborhood_to_keep[T_idxs_NOT_to_keep,:] = 0
-    neighborhood_to_keep[:,T_idxs_NOT_to_keep] = 0
-
-    # now keep only the upper triangular part for keeping only one copy of each neighbor pairs
-    unique_neighborhood = np.triu(neighborhood_to_keep)
-    unique_neighbors = np.where(unique_neighborhood > 0.5)
-    unique_neighbors_np = np.vstack(unique_neighbors).T
-
-    # build differences
-    Delta_T = []
-    for neighbor_idxs in unique_neighbors_np:
-        Delta_T.append( np.abs( temperature_array[:, neighbor_idxs[0]] - temperature_array[:, neighbor_idxs[1]]) )
-
-    Delta_T = np.vstack(Delta_T).T
-
-    # calculate stds
-    std_delta_T = np.std(Delta_T,axis = -1)
-    mean_delta_T = np.mean(Delta_T,axis = -1)
-    std_T = np.std(temperature_array,axis = -1)
-    mean_T = np.mean(temperature_array,axis = -1)
-
-    return mean_T, std_T, mean_delta_T, std_delta_T
-
-def synchronizeWithDtw(signal1,signal2):
-    # return sync_signal1, sync_signal2, distance
     alignment = dtw( signal1, signal2, keep_internals=True)
-    # normalized_distance = alignment.normalizedDistance
     
     index1 = alignment.index1
     sync_signal1 = signal1[index1]
@@ -460,7 +385,13 @@ def synchronizeWithDtw(signal1,signal2):
 
     return sync_signal1, sync_signal2, normalized_distance,std_step_cost_increase, max_step_cost_increase, min_step_cost_increase
 
-def unscale(responses,scaler):
+def unscale(responses : np.ndarray, scaler : Scaler) -> np.ndarray:
+    """
+    Unscale the responses
+    @param responses: the responses to unscale
+    @param scaler: the scaler to use
+    @return: the unscaled responses
+    """
     responses_unscale = responses.T
     unscaled_responses_data = np.zeros_like(responses_unscale)
     for i,response_unscale in enumerate(responses_unscale):
@@ -472,21 +403,37 @@ def unscale(responses,scaler):
 def eval( m : mTerm, g : gTerm, f : fTerm, file_to_evaluate : str, validation_experiment : _Experiment, 
     likelihoods : gpytorch.likelihoods.LikelihoodList, models : gpytorch.models.IndependentModelList, GP_weights_normalizers : torch.Tensor, 
     prc : preProcessor, delay_model : LinearRegression , save_plots_ = False, RESULTS_FOLDER = "./"  , starting_point = 300, steps = 4000, 
-    number_of_concurrent_processes : int or None = None, pool : mp.Pool or None = None):
-    
-    # print(file_to_evaluate)
+    number_of_concurrent_processes : int or None = None, pool : mp.Pool or None = None) -> float:
+    """
+    Evaluates the model on a given experiment.
+    @param m : m term of the model
+    @param g : g term of the model
+    @param f : f term of the model
+    @param file_to_evaluate : experiment id to evaluate
+    @param validation_experiment : experiment to evaluate (corresponding to file_to_evaluate)
+    @param likelihoods : likelihoods of the model
+    @param models : GP models
+    @param GP_weights_normalizers : normalizers of the GP weights
+    @param prc : preprocessor of the model
+    @param delay_model : delay model
+    @param save_plots_ : whether to save the plots or not
+    @param RESULTS_FOLDER : folder to save the plots
+    @param starting_point : starting point of the roll out
+    @param steps : number of steps of the roll out
+    @param number_of_concurrent_processes : number of concurrent processes to use
+    @param pool : pool of concurrent processes to use
+    @return :  mean DTW error
+    """
     file = file_to_evaluate
     all_extrapolation_times = []
 
-    # t = time.time()
-    ## for prediction with neighbors' mean temps    
-    mean_extrapolation,validation_experiment,all_elapsed_times = probabilisticPredictionsWrapper(copy(validation_experiment), m, g, f, likelihoods, models, GP_weights_normalizers , starting_idx = 300, steps = 4000, samples = 1, messages = False, mean_model=True, device = "cpu", scaler = copy(prc.scaler), delay_model = delay_model)
+    # sample mean parameters (most probable system) and unroll the model    
+    mean_extrapolation,validation_experiment,all_elapsed_times = probabilisticPredictionsWrapper(copy(validation_experiment), m, g, f, likelihoods, models, GP_weights_normalizers , starting_idx = 300, steps = 4000, samples = 1, messages_ = False, mean_model_=True, device = "cpu", scaler = copy(prc.scaler), delay_model = delay_model)
     mean_extrapolation = mean_extrapolation[0]
-    # t1 = time.time()
-    # print(f"\tElpsed 1 {t1 -t}")
 
     if save_plots_:
-        sampled_extrapolations,*_ = probabilisticPredictionsWrapper(copy(validation_experiment), m, g, f, likelihoods, models, GP_weights_normalizers , starting_idx = 300, steps = 4000, samples = 100, messages = False, scaler = copy(prc.scaler), delay_model = delay_model, process_validation_experiment = False , number_of_concurrent_processes=number_of_concurrent_processes)
+        # if needed sample more system extrapolations and unroll them to calculate their statistics
+        sampled_extrapolations,*_ = probabilisticPredictionsWrapper(copy(validation_experiment), m, g, f, likelihoods, models, GP_weights_normalizers , starting_idx = 300, steps = 4000, samples = 100, messages_ = False, scaler = copy(prc.scaler), delay_model = delay_model, process_validation_experiment_ = False , number_of_concurrent_processes=number_of_concurrent_processes)
 
         stacked_sampled_extrapolations = np.stack(sampled_extrapolations,axis=0)
         std_sampled_extrapolations = np.std(stacked_sampled_extrapolations,axis = 0)
@@ -494,10 +441,9 @@ def eval( m : mTerm, g : gTerm, f : fTerm, file_to_evaluate : str, validation_ex
         ub = mean_extrapolation + 3*std_sampled_extrapolations
         lb = mean_extrapolation - 3*std_sampled_extrapolations
 
-    # t2 = time.time()
-    # print(f"\tElpsed 2 {t2 -t1}")
     T_state_nominal = np.asarray( [p.T_t_use[starting_point:starting_point+steps+1] for p in validation_experiment.Points if p._hasNeighbors_()] ).T
 
+    # undo scaling
     unscaled_responses = unscale(mean_extrapolation,prc.scaler)
     unscaled_targets = unscale(T_state_nominal,prc.scaler)
     if save_plots_:
@@ -511,9 +457,7 @@ def eval( m : mTerm, g : gTerm, f : fTerm, file_to_evaluate : str, validation_ex
         lb_unscaled = lb_unscaled[:len(unscaled_targets),:]
         timestamps = timestamps[:len(unscaled_targets)]
 
-    # t3 = time.time()
-    # print(f"\tElpsed 3 {t3 -t2}")
-
+    # select points to calculate the metrics (exclude points in boundaries because of corrupted measurements in many datasets)
     central_plate_points = [p for p in validation_experiment.Points if len(p.neighbor_nodes)==4]
     T_idxs_to_keep = [True if len(p.neighbor_nodes)==4 else False for p in validation_experiment.Points]
     T_idxs_to_keep = np.asarray(T_idxs_to_keep)
@@ -526,33 +470,24 @@ def eval( m : mTerm, g : gTerm, f : fTerm, file_to_evaluate : str, validation_ex
         # if you don't plot them one by one prepare the inputs for doing that in parallel
         ins.append( (copy(validation_experiment), mean_extrapolation, starting_point, steps, node) )
 
-    # t4 = time.time()
-    # print(f"\tElpsed 4 {t4 -t3}")
-    # run in parallel the plotting fun
     results = []
     if number_of_concurrent_processes is None:
         number_of_concurrent_processes = np.min( [len(nodes_to_plot), int(mp.cpu_count()*0.8)] )
 
+    # calculate the metrics
     if pool is None:
         with mp.Pool( processes = number_of_concurrent_processes ) as pool:
-            # mean_T_distances = pool.map( tempExtrapolationPlot, ins )
             results = pool.map( synchronizeWithDtwwrapper, ins )
     else:
         results = pool.map( synchronizeWithDtwwrapper, ins )
 
     # These distances are the DTW distances of each roll out. So they are already time-averaged
     for i,(in_i,result) in enumerate(zip(ins,results)):
-    # for i,in_i in enumerate(ins):
-    #     result = synchronizeWithDtwwrapper(in_i)
         (*_, node)  = in_i
         distance_i, distance_std, distance_min, distance_max = result
         all_mean_T_distances[i] = distance_i
     ins = []
 
-    # t5 = time.time()
-    # print(f"\tElpsed 4 {t5 -t4}")
-    
-    # all_mean_T_distances = np.abs(mean_extrapolation[:,T_idxs_to_keep] - T_state_nominal[:,T_idxs_to_keep])
     mean_dtw_rel_error = np.mean(all_mean_T_distances) # spatial average of mean Distance in timeseries of nodes
 
     # write performance
@@ -574,30 +509,43 @@ def eval( m : mTerm, g : gTerm, f : fTerm, file_to_evaluate : str, validation_ex
             vis.plotContour2(unscaled_responses[:,T_idxs_to_keep],point_locations,np.array(step_to_plot),d_grid = 27, result_folder = RESULTS_FOLDER, field_value_name_id = "CoarseTemperature_"+ file, colorbar_scaling = colorbar_scaling)
             vis.plotContour2(unscaled_targets[:,T_idxs_to_keep],point_locations,np.array(step_to_plot),d_grid = 27, result_folder = RESULTS_FOLDER, field_value_name_id = "CoarseNominalTemperature_"+ file, colorbar_scaling = colorbar_scaling)
 
-    # t6 = time.time()
-    # print(f"\tElpsed 4 {t6 -t5}")
-
     return mean_dtw_rel_error
-
 
 def evalNoDTW( m : mTerm, g : gTerm, f : fTerm, file_to_evaluate : str, validation_experiment : _Experiment, 
     likelihoods : gpytorch.likelihoods.LikelihoodList, models : gpytorch.models.IndependentModelList, GP_weights_normalizers : torch.Tensor, 
     prc : preProcessor, delay_model : LinearRegression , save_plots_ = False, RESULTS_FOLDER = "./"  , starting_point = 300, steps = 4000, 
     number_of_concurrent_processes : int or None = None, pool : mp.Pool or None = None):
+    """
+    Evaluates the model on a given experiment.
+    @param m : m term of the model
+    @param g : g term of the model
+    @param f : f term of the model
+    @param file_to_evaluate : experiment id to evaluate
+    @param validation_experiment : experiment to evaluate (corresponding to file_to_evaluate)
+    @param likelihoods : likelihoods of the model
+    @param models : GP models
+    @param GP_weights_normalizers : normalizers of the GP weights
+    @param prc : preprocessor of the model
+    @param delay_model : delay model
+    @param save_plots_ : whether to save the plots or not
+    @param RESULTS_FOLDER : folder to save the plots
+    @param starting_point : starting point of the roll out
+    @param steps : number of steps of the roll out
+    @param number_of_concurrent_processes : number of concurrent processes to use
+    @param pool : pool of concurrent processes to use
+    @return : mean asynchronous MAPE (including contribution from the delay model)
+    """
     
-    # print(file_to_evaluate)
     file = file_to_evaluate
     all_extrapolation_times = []
 
-    # t = time.time()
-    ## for prediction with neighbors' mean temps    
-    mean_extrapolation,validation_experiment,all_elapsed_times = probabilisticPredictionsWrapper(copy(validation_experiment), m, g, f, likelihoods, models, GP_weights_normalizers , starting_idx = 300, steps = 4000, samples = 1, messages = False, mean_model=True, device = "cpu", scaler = copy(prc.scaler), delay_model = delay_model)
+    # sample mean parameters (most probable system) and unroll the model    
+    mean_extrapolation,validation_experiment,all_elapsed_times = probabilisticPredictionsWrapper(copy(validation_experiment), m, g, f, likelihoods, models, GP_weights_normalizers , starting_idx = 300, steps = 4000, samples = 1, messages_ = False, mean_model_=True, device = "cpu", scaler = copy(prc.scaler), delay_model = delay_model)
     mean_extrapolation = mean_extrapolation[0]
-    # t1 = time.time()
-    # print(f"\tElpsed 1 {t1 -t}")
 
     if save_plots_:
-        sampled_extrapolations,*_ = probabilisticPredictionsWrapper(copy(validation_experiment), m, g, f, likelihoods, models, GP_weights_normalizers , starting_idx = 300, steps = 4000, samples = 100, messages = False, scaler = copy(prc.scaler), delay_model = delay_model, process_validation_experiment = False , number_of_concurrent_processes=number_of_concurrent_processes)
+        # if needed sample more system extrapolations and unroll them to calculate their statistics
+        sampled_extrapolations,*_ = probabilisticPredictionsWrapper(copy(validation_experiment), m, g, f, likelihoods, models, GP_weights_normalizers , starting_idx = 300, steps = 4000, samples = 100, messages_ = False, scaler = copy(prc.scaler), delay_model = delay_model, process_validation_experiment_ = False , number_of_concurrent_processes=number_of_concurrent_processes)
 
         stacked_sampled_extrapolations = np.stack(sampled_extrapolations,axis=0)
         std_sampled_extrapolations = np.std(stacked_sampled_extrapolations,axis = 0)
@@ -605,10 +553,9 @@ def evalNoDTW( m : mTerm, g : gTerm, f : fTerm, file_to_evaluate : str, validati
         ub = mean_extrapolation + 3*std_sampled_extrapolations
         lb = mean_extrapolation - 3*std_sampled_extrapolations
 
-    # t2 = time.time()
-    # print(f"\tElpsed 2 {t2 -t1}")
     T_state_nominal = np.asarray( [p.T_t_use[starting_point:starting_point+steps+1] for p in validation_experiment.Points if p._hasNeighbors_()] ).T
 
+    # undo the scaling
     unscaled_responses = unscale(mean_extrapolation,prc.scaler)
     unscaled_targets = unscale(T_state_nominal,prc.scaler)
     if save_plots_:
@@ -622,17 +569,15 @@ def evalNoDTW( m : mTerm, g : gTerm, f : fTerm, file_to_evaluate : str, validati
         lb_unscaled = lb_unscaled[:len(unscaled_targets),:]
         timestamps = timestamps[:len(unscaled_targets)]
 
-    # t3 = time.time()
-    # print(f"\tElpsed 3 {t3 -t2}")
-
+    # select points to calculate the metrics (exclude points in boundaries because of corrupted measurements in many datasets)
     central_plate_points = [p for p in validation_experiment.Points if len(p.neighbor_nodes)==4]
     T_idxs_to_keep = [True if len(p.neighbor_nodes)==4 else False for p in validation_experiment.Points]
     T_idxs_to_keep = np.asarray(T_idxs_to_keep)
 
+    # calculate the metrics
     nodes_to_plot = [p.node for p in central_plate_points]
     responses_eval = unscaled_responses[:,T_idxs_to_keep]
     targets_eval = unscaled_targets[:,T_idxs_to_keep]
-    # all_mean_T_distances = np.abs(mean_extrapolation[:,T_idxs_to_keep] - T_state_nominal[:,T_idxs_to_keep])
     mare = np.mean( np.abs(responses_eval-targets_eval)/(np.abs(targets_eval))+1e-4 ) # spatial average of mean Distance in timeseries of nodes
 
     # write performance
@@ -654,20 +599,7 @@ def evalNoDTW( m : mTerm, g : gTerm, f : fTerm, file_to_evaluate : str, validati
             vis.plotContour2(unscaled_responses[:,T_idxs_to_keep],point_locations,np.array(step_to_plot),d_grid = 27, result_folder = RESULTS_FOLDER, field_value_name_id = "CoarseTemperature_"+ file, colorbar_scaling = colorbar_scaling)
             vis.plotContour2(unscaled_targets[:,T_idxs_to_keep],point_locations,np.array(step_to_plot),d_grid = 27, result_folder = RESULTS_FOLDER, field_value_name_id = "CoarseNominalTemperature_"+ file, colorbar_scaling = colorbar_scaling)
 
-    # t6 = time.time()
-    # print(f"\tElpsed 4 {t6 -t5}")
-
     return mare
-
-
-def safe_eval(*ins):
-    try:
-        out = eval(*ins)
-    except Exception as e:
-        print(e)
-        out = np.NaN
-    
-    return out
 
 if __name__ == "__main__":
     
