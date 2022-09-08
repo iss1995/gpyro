@@ -1,24 +1,24 @@
 # %%
 import numpy as np
-import pandas as pd
 import multiprocessing_on_dill as mp
 
 import data_processing._config as config
+import data_processing.preprocessor as preprocessor
+# from pathos.pools import ParallelPool as Pool
 
-import torch, csv, pickle, random
+import torch, random
+import warnings
+import optuna
 
 import utils.online_optimization_utils as onopt
 import utils.extrapolation_utils as exu
-import utils.visualizations as vis
-
-from data_processing.preprocessor import preProcessor
 
 from scipy.signal import butter, filtfilt
 from copy import deepcopy as copy
 
-def executeMain(hyperparameters,save_plots_ = False):
+def executeMain(hyperparameters,kwargs,save_plots_ = False):
     try:
-        result = main(hyperparameters,save_plots_)
+        result = evaluate_hyperparamters(hyperparameters,**kwargs)
     except Exception as e:
         result = float('nan')
         print(f"In {hyperparameters}:")
@@ -26,23 +26,15 @@ def executeMain(hyperparameters,save_plots_ = False):
 
     return result
 
-def multiprocess_eval( func, processes = 2):
-    def wrapper(*args):
-        with mp.Pool(processes) as pool:
-            results = pool.map(func,args)
-        return results
-    return wrapper
 # %%
-def main(save_plots_ = False, seed = 0):
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    random.seed(seed)
-    
-    # preprocess training data and create scaler
-    ###############################################################################################
-    print("Pre-processing...")
+def main(N = 100,save_plots_ = False):
+
+    warnings.filterwarnings("ignore")
+    print("Post-processing...")
+
     FILES_FOLDER,POINT_TEMPERATURE_FILES,POINT_COORDINATES,TRAJECTORY_FILES,RESULTS_FOLDER,RESULTS_FOLDER_GP,RESULTS_FOLDER_MODEL,d_grid,output_scale,length_mean,length_var,opt_kwargs = config.config()
-    prc = preProcessor(FILES_FOLDER,POINT_TEMPERATURE_FILES,POINT_COORDINATES,TRAJECTORY_FILES,RESULTS_FOLDER,subsample = 5)
+    FILES_FOLDER = "./Gpyro-TD/"
+    prc = preprocessor.preProcessor(FILES_FOLDER,POINT_TEMPERATURE_FILES,POINT_COORDINATES,TRAJECTORY_FILES,RESULTS_FOLDER,subsample = 5)
     _ = prc.loadData(d_grid = d_grid, deposition_height_of_boundary =  0 )
     id_tag = prc.plotter.time
 
@@ -84,8 +76,13 @@ def main(save_plots_ = False, seed = 0):
     ###############################################################################################
     points_used_for_training = [p for p in experiment.Points if p._hasNeighbors_()]
 
+    # on_corner_ all false 
+    # TODO: remove on_corner_ ?
     on_boundary_ = onopt.pointsOnBoundaries_(experiment)
 
+    layer_idxs, unique_height_values = onopt.splitToLayers(points_used_for_training=points_used_for_training,tool_height_trajectory = experiment.tool_deposition_depth[::experiment.subsample], debug = False)
+
+    # TODO: define the trajectory height of boundary nodes as the opposite trajectory height of their closest excited node  
     points_used_for_training = onopt.statesForBoundaries( points_used_for_training ,on_boundary_ )
 
     states = np.unique([p.excitation_delay_torch_height_trajectory for p in points_used_for_training])
@@ -96,18 +93,54 @@ def main(save_plots_ = False, seed = 0):
     # %%
     # optimization
     ####################################################################################################
-    g = onopt.gTerm(params = opt_kwargs["param_g0"])
-    f = onopt.fTerm(params = opt_kwargs["param_f0"])
-    m = onopt.mTerm(neighbors = neighbor_list ,params = opt_kwargs["param_m0"])
 
-    # f_parameters_per_building_layer_height, g_parameters_per_building_layer_height, m_parameters_per_building_layer_height, all_training_times_per_state = onopt.onlineOptimization(layer_idxs, states, points_used_for_training, **kwargs )
-    # wrapping_fun = lambda x: 2*(np.sqrt(1+x)-1)  
-    wrapping_fun = np.arctan  
-    wrap_function_ = True
-    opt_kwargs["wrap_function_"] = wrap_function_
-    opt_kwargs["wrapping_function"] = wrapping_fun
-    f_parameters_per_building_layer_height, g_parameters_per_building_layer_height, m_parameters_per_building_layer_height, all_training_times_per_state \
-                                        = onopt.batchOptimization(states, points_used_for_training, m , f, g, **opt_kwargs )
+    epochs = 20
+    underestimate_lengthscales = 0
+    
+    kwargs = {
+        "bounds_f": opt_kwargs["bounds_f"], "bounds_g" : opt_kwargs["bounds_g"], "bounds_m" : opt_kwargs["bounds_m"], "param_f0" : opt_kwargs["param_f0"], "param_g0" : opt_kwargs["param_g0"], 
+        "param_m0" : opt_kwargs["param_m0"],"points_used_for_training" : points_used_for_training, "states" : states,"RESULTS_FOLDER" : RESULTS_FOLDER, 
+        "neighbor_list" : neighbor_list, "experiment_ids" : experiment_ids,"prc" : prc 
+    }
+    obj = objective(kwargs)
+    # Let us minimize the objective function above.
+
+    print(f"Running {N} trials...")
+    study = optuna.create_study(study_name = "gpyro_hyperparameter_opt_"+id_tag ,direction="minimize")
+    print(study.study_name)
+    study.optimize(obj, n_trials=N)
+    print("Best value: {} (params: {})\n".format(study.best_value, study.best_params))
+
+    fig = optuna.visualization.plot_param_importances(study)
+    fig.write_image(f"{study.study_name}.pdf")
+
+    return None
+
+def evaluate_hyperparamters( hyperparameters, bounds_f, bounds_g, bounds_m, param_f0, param_g0, param_m0, points_used_for_training, states, RESULTS_FOLDER, neighbor_list, experiment_ids, prc, seed = 0 ):
+    save_plots_ = False
+    (G_reg, F_reg, M_reg, output_scale, length_mean, length_var) = hyperparameters
+
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    random.seed(seed)
+    
+    epochs = 3
+    g = onopt.gTerm(params = param_g0)
+    f = onopt.fTerm(params = param_f0)
+    m = onopt.mTerm(neighbors = neighbor_list ,params = param_m0)
+
+    kwargs = {"bounds_f":bounds_f, 
+            "bounds_g":bounds_g, 
+            "bounds_m":bounds_m, 
+            "F_reg":F_reg,
+            "G_reg": G_reg,
+            "M_reg": M_reg,
+            "param_f0": param_f0,
+            "param_g0": param_g0,
+            "param_m0": param_m0,
+            "epochs" : epochs,
+            "perturbation_magnitude" : 0.0}
+    f_parameters_per_building_layer_height, g_parameters_per_building_layer_height, m_parameters_per_building_layer_height, all_training_times_per_state = onopt.batchOptimization(states, points_used_for_training, m , f, g, **kwargs )
 
     print(f"Mean Training time per state {np.mean(all_training_times_per_state)}")
     # %%
@@ -125,8 +158,7 @@ def main(save_plots_ = False, seed = 0):
     g_repository = np.asarray(g_parameters_per_building_layer_height[-1])
     f_repository = np.asarray(f_parameters_per_building_layer_height[-1])[:,None]
 
-    # overwirte elements of g and f where no training data were available. Assign values that will improve GP 
-    # fit by putting their symmetric values.
+    # overwirte elements of g and f where no training data were available. Assign values that will improve GP fit.
     states_with_no_excitation = np.where(states < 0)[0][::-1]
     state_with_first_excitation = np.where(states == 0)[0][0]
     m_repository[states_with_no_excitation,-1] = m_repository[state_with_first_excitation,-1] - \
@@ -137,21 +169,13 @@ def main(save_plots_ = False, seed = 0):
             ( f_repository[state_with_first_excitation+1:,:] - f_repository[state_with_first_excitation,:] )
 
     parameters = np.concatenate((m_repository,g_repository,f_repository),axis = 1).T
-    export_name = RESULTS_FOLDER_MODEL + "final_models"
-    df = pd.DataFrame(parameters)
-    df.to_csv(export_name + '.csv', header = False, index = False)
-
-
-    # save delay
-    with open( RESULTS_FOLDER_MODEL + "delay_model.sav","wb") as file:
-        pickle.dump(delay_model, file)
 
     # %%
     # TRAIN GP
     ###############################################################################################
     # set prefered device for optimization
-    print("Fit GP...")
     models,likelihoods, GP_weights_normalizers, band_nominal_height_tensor, device = onopt.initializeGPModels(parameters,states,device_tp_optimize = 'cpu', output_scale = output_scale, length_mean = length_mean, length_var = length_var)
+    #print("GP model optimization starting:")
 
     # define hyperparams
     gp_model_to_load = '' # if empty, then optimize
@@ -161,35 +185,15 @@ def main(save_plots_ = False, seed = 0):
                     "training_iter": max_training_iter,
                     "loss_thress":thress,
                     "no_improvement_thress": 50,
-                    "gp_model_to_load":gp_model_to_load}
+                    "gp_model_to_load":gp_model_to_load,
+                    "_device" : "cpu"}
 
     # run optimization or load specified model
     models, likelihoods, gp_data = onopt.GPOpt(copy(models),copy(likelihoods),**gp_opt_kwargs)
 
-    # check if you loaded data
-    if gp_data is not None:
-        T_vector = gp_data["temperatures"]
-        parameters = gp_data["weights"]
-
-    # save model if you didn't load it
-    if not gp_model_to_load:
-        export_name = RESULTS_FOLDER_GP + f"noLags_{id_tag}"
-        torch.save(models.state_dict(), export_name + ".pth")
-        torch.save(likelihoods.state_dict(),export_name + "_like.pth")
-
-        with open(export_name + '_data.csv',"w+") as data_csv:
-            csvWriter = csv.writer(data_csv,delimiter=',')
-            csvWriter.writerows([ np.vstack( (band_nominal_height_tensor.T, parameters) ) ])
-
-    # plot GPs
-    if save_plots_: 
-        vis.plotGPWeights( likelihoods, models, RESULTS_FOLDER, states=states, device = None, xticks = None, id = "",title = None)
-        vis.plotWeightsSubplot(likelihoods, models, RESULTS_FOLDER, states=states, weights_in_subplot = [0,1,2], device = None, xticks = None, id = "",title = None)
-
     # %%
     # Validate with online state propagation
     ###############################################################################################
-    print("Validate with online state propagation...")
 
     g = onopt.gTerm(params = g_repository)
     f = onopt.fTerm(params = f_repository)
@@ -202,16 +206,20 @@ def main(save_plots_ = False, seed = 0):
 
     # put files in order
     files_to_evaluate = [exp.experiment_id for exp in validation_experiments]
-    
+
     number_of_concurrent_processes = mp.cpu_count()-1
     all_mean_dtw_distances = []
+    # with mp.Pool(number_of_concurrent_processes) as pool:
     pool = None
     try:
-        for (validation_experiment, file_id) in zip(validation_experiments,files_to_evaluate):  
-            print(f"Evaluating {file_id}")
-            all_mean_dtw_distances.append( exu.eval(m, g, f, file_id, validation_experiment, likelihoods, models, GP_weights_normalizers, prc, delay_model , save_plots_ , RESULTS_FOLDER  , starting_point , steps, number_of_concurrent_processes, pool ))
-            # all_mean_dtw_distances.append( exu.evalNoDTW(m, g, f, file_id, validation_experiment, likelihoods, models, GP_weights_normalizers, prc, delay_model , save_plots_ , RESULTS_FOLDER  , starting_point , steps, number_of_concurrent_processes, pool ))
-            print(f"{file_id} perforrmance {all_mean_dtw_distances[-1]*100:.4f}%")
+        for (validation_experiment, file_id) in zip(validation_experiments,files_to_evaluate):    
+            # res = exu.safe_eval(m, g, f, file_id, validation_experiment, likelihoods, models, GP_weights_normalizers, prc, delay_model , save_plots_ , RESULTS_FOLDER  , starting_point , steps, number_of_concurrent_processes, pool )
+            res = exu.evalNoDTW(m, g, f, file_id, validation_experiment, likelihoods, models, GP_weights_normalizers, prc, delay_model , save_plots_ , RESULTS_FOLDER  , starting_point , steps, number_of_concurrent_processes, pool )
+            all_mean_dtw_distances.append( res )
+            if res>0.20:
+                # print(f"{file_id} has a mean DTW distance of {res}>0.15. Breaking current validation.")
+                print(f"{file_id} has a MARE of {res}>0.2. Breaking current validation.")
+                break
     except Exception as e:
         print(e)
 
@@ -219,10 +227,41 @@ def main(save_plots_ = False, seed = 0):
     failed_idxs = np.isnan(all_mean_dtw_distances)
 
     T_Mean_error = np.mean(all_mean_dtw_distances[~failed_idxs]) * 100
-    print(f"\nDTW mean relative error: {T_Mean_error}%\tSuccesful validations {len(all_mean_dtw_distances)-np.sum(failed_idxs)}")
+    # print(f"\nDTW mean relative error: {T_Mean_error}%\n(G_reg, F_reg, M_reg, output_scale, length_mean, length_var) {hyperparameters}"+
+    print(f"\nmare: {T_Mean_error}%\n(G_reg, F_reg, M_reg, output_scale, length_mean, length_var) {hyperparameters}"+
+    "\n______________________________________________________________________________")
+    return T_Mean_error 
 
-    return T_Mean_error
-# %%
+class objective:
+    def __init__(self,kwargs):
+        self.kwargs = kwargs
+
+    def __call__(self,trial):
+
+        # define hyperparams. Ranges are defined as powers of 10
+        g_reg = trial.suggest_float("g_reg", -4, -1)
+        f_reg = trial.suggest_float("f_reg", -7, -4)
+        m_reg = trial.suggest_float("m_reg", -3, 0)
+
+        # Here ranges are normally defined
+        output_scale = trial.suggest_float("output_scale", -1, 0)
+        length_mean = trial.suggest_float("length_mean", -2, 0)
+        length_var = trial.suggest_float("length_var", -3, -1)
+
+        hyperparams = (10**g_reg, 10**f_reg, 10**m_reg, output_scale, length_mean, length_var)
+        return executeMain(hyperparams, self.kwargs)
+
 if __name__ == "__main__":
+
     SEED = 0
-    _ = main(save_plots_= True,seed = SEED) # %%
+    np.random.seed(SEED)
+    torch.manual_seed(SEED)
+    random.seed(SEED)
+
+    warnings.filterwarnings("ignore")
+
+    # Number of trials
+    N = 100
+
+    _ = main(N=N,save_plots_=False)
+# %%

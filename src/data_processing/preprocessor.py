@@ -30,43 +30,8 @@ long_fig = (16,9)
 # %% [markdown]
 # Data loader class.
 # Preprocess data and export them in order.
-
-class objective_fun:
-    def __init__(self,Xs,Ys,band,nob,systemTransform):
-        self.Xs = Xs
-        self.Ys = Ys
-        self.band = band # temperature band
-        self.nob = nob # number of bands
-        self.counter = 0
-        self.systemTransform = systemTransform
-
-    def __call__(self,dyn_vec):
-
-        self.counter += 1
-        # #print("dyn_vec ",dyn_vec.shape)
-        dyn_vec_conv = dyn_vec[:-4]
-        # #print("dyn_vec_conv ",dyn_vec_conv.shape)
-        dynamics = np.hstack((dyn_vec_conv,dyn_vec_conv,dyn_vec_conv,dyn_vec)).T
-        dynamics = self.systemTransform(dyn_vec)
-        # #print("dynamics ",dynamics.shape)
-        # rollout response
-        Delta_responses = dynamics.dot(self.Xs).squeeze()
-        # #print("Xs ",self.Xs.shape)
-        # #print("Delta_resp ",Delta_responses.shape)
-        # Delta_responses = Delta_responses[:-1] #discard the last one because you predict the next Delta_y
-
-        # calculate error
-        rel_error = (100*(Delta_responses-self.Ys))
-        mre = np.mean(rel_error**2/(self.Ys+10))
-
-        # report if needed
-        if not (self.counter%50000):
-            print("\tModel:{}\\{}\t|\tCalls:\t{}\tcost:\t{:.5f}".format(self.band+1,self.nob,self.counter,mre))
-
-        return mre
-
 class preProcessor:
-    def __init__(self, files_folder, point_temperature_files, point_coordinates_files, tool_trajectory_files, results_folder = "./results/", subsample = 1):
+    def __init__(self, files_folder : str, point_temperature_files : str, point_coordinates_files : str, tool_trajectory_files :str, results_folder :str = "./results/", subsample : int = 1):
         '''
         Data loader class. Preprocess data and export.
         @param files_folder : string with path to the data folder.
@@ -74,6 +39,7 @@ class preProcessor:
         @param point_coordinates_files : string with names of files including coordinates of points.
         @param tool_trajectory_files : string with names of files including tool trajectory.
         @param files_folder : string with path to the designated result folder.
+        @param subsample : int with subsampling factor.
         '''
         self.FILES_FOLDER = files_folder
         self.POINT_TEMPERATURE_FILES = point_temperature_files
@@ -88,11 +54,14 @@ class preProcessor:
         # setattr(self.contourPlot,"_count",0)
         # self._save_ = 0s
 
-    def loadData(self,scaling_ = True, d_grid = None, debug_data = True, deposition_height_of_boundary = 0, deposition_height_of_non_excited = 0):
+    def loadData(self,scaling_ :bool = True, d_grid : float or None = None, debug_data : bool = True, deposition_height_of_boundary : float = 0, deposition_height_of_non_excited : float = 0):
         '''
         Load files and save them into Experiments format.
         @params scaling_ : whether to scale or not.
         @params d_grid : distance between nodes on grid. If None the min distance found is taken
+        @params debug_data : whether to load debug data or not.
+        @params deposition_height_of_boundary : hallucinated height of deposition of boundary points.
+        @params deposition_height_of_non_excited : hallucinated height of deposition of non excited points.
          
         @returns experiments : List of experiment objects.
         '''
@@ -105,14 +74,10 @@ class preProcessor:
         rep_temp = []
         rep_traj = []
         rep_timestamps = []
-        #print("Loading measurements...")
-        # for (temp_file,traj_file) in zip(all_temp_files,all_traj_files):
         experiment_ids = []
         for temp_file in all_temp_files:
 
             try:
-                # images_file = pd.read_csv(temp_file, index_col=0, header = 0,dtype = np.float64,delimiter=';',decimal=',').to_numpy(dtype = np.float64, na_value= np.inf )
-
                 # read data and make sure they are all floats
                 images_file_pd = images_file = pd.read_csv(temp_file, index_col=0, header = 0,delimiter=';',decimal=',')
                 types = images_file_pd.dtypes
@@ -181,15 +146,12 @@ class preProcessor:
             self.scaler = scalingFunction()
 
         # load and order points
-        #print("Loading points...")
         points = pd.read_csv(point_coordinates_files[0], index_col=None, header=0,delimiter=';').to_numpy()
 
         self.d_grid = d_grid
         N_grid_sorted, N_coord_sorted, self.d_grid = self.orderPoints( points, d_grid = self.d_grid )
-        #print("Done")
 
         # create _Point objects. Assign them their spatial attributes.
-        #print("Ordering points...")
         points_temp = []
         for j,(coordinates, N_tuple, N_coord_tuple) in enumerate(zip(points, N_grid_sorted, N_coord_sorted)):
             curr_point = _Point(j,coordinates)
@@ -199,10 +161,8 @@ class preProcessor:
             points_temp.append(curr_point)
 
         self.points_spatial_info = points_temp # save spatial point information - you need it 
-        #print("Done")
 
         # build _Experiment objects and assign _Point temporal attributes.
-        #print("Form experiment data...")
         self.experiments = []
         for j,(temp,traj,ts) in enumerate(zip(rep_temp,rep_traj,rep_timestamps)):
             ambient_temp = np.mean(temp[0,:]) 
@@ -214,15 +174,8 @@ class preProcessor:
             curr_exp = _Experiment(Points = point_list, Parent_plotter = self.plotter, T_ambient = ambient_temp,Timestamps = ts, id = experiment_ids[j], subsample = self.subsample, results_folder = self.RESULTS_FOLDER, deposition_height_of_boundary = deposition_height_of_boundary, deposition_height_of_non_excited = deposition_height_of_non_excited)
 
             curr_exp._setTraj(traj)
-            # curr_exp._calculateAmbientTempeature(nodes = [40,41,42,43])
             curr_exp._calculateAmbientTempeature()
             self.experiments.append(curr_exp._copy())
-        #print("Done")
-        ## keep each experiment separate
-        ### i-indexing : 0-32 -> points
-        # self.temp_np = np.asarray( [temp_exp.to_numpy() for temp_exp in rep_temp],dtype=object )
-        # ### i-indexing : 0-2 -> tool position, 3 -> time, 4 -> weld bool
-        # self.traj_np = np.asarray( [traj_exp.to_numpy() for traj_exp in rep_traj],dtype=object )
         return self.experiments
 
     @staticmethod
@@ -309,33 +262,17 @@ class preProcessor:
                 N_grid.append([])
 
         # Sort neighbors in the same order (wrt to the plane)
-
-        # N_coord = [(points[p[0]],points[p[1]]) for n in N_grid for p in n] # for empty rows in N you don't get any rows
-
         N_coord_sorted = []
         N_grid_sorted = []
-        # #print(N_grid)
         for n in N_grid:
-            # #print("N: {}".format(n))
             if n:
                 tmp = []
                 for i,pi in enumerate(n):
-                    # #print("n:{},p:{}".format(n,p))
-                    # tmp.append(( points[pi[0]] , points[pi[1]] ,i)) # cannot sort after
                     tmp.append((tuple(points[pi[0]]),tuple(points[pi[1]]),i)) # add indexes
-                    # tmp.append((points[pi[0]][0],points[pi[1]][0],i)) # add indexes - these are not exactly the points
-
-                # #print("Appending:",tmp)
-                # n_coord_sorted = sorted(tmp)
+                
                 n_coord_sorted = sorted(tmp, key=lambda tup: (tup[1]) ) # (xMin,yMin,yMax,xMax)
                 N_coord_sorted.append([(n_coord[0],n_coord[1]) for n_coord in n_coord_sorted])
-                # #print("Sorted:",n_coord_sorted)
-                # #print("\n")
-                # temp_sorted = [n[n_coord[2]] for n_coord in n_coord_sorted]
                 N_grid_sorted.append([n[n_coord[2]] for n_coord in n_coord_sorted]) # reorder points based on indexes
-                # #print("n_coord_sorted:",n_coord_sorted)
-                # #print("N_grid_sorted:",N_grid_sorted[-1])
-                # N_grid_sorted.append(n[sorted_idxs])
             else:
                 N_coord_sorted.append(())
                 N_grid_sorted.append(())
@@ -501,12 +438,6 @@ class _prePrcossesorPlotter(preProcessor):
         # fig = plt.figure(figsize=square_fig)
         fig_contour = plt.figure(figsize=square_fig)
         ax = fig_contour.add_subplot(111)
-
-        ## Plot the contour
-        ### This potato library does not fill the fucking plot
-        # sns.kdeplot(data = plot_data, hue = colour_property, fill = True, thresh=0, levels=25, vmin = 25, vmax = 1000 , cmap="mako")
-        # sns.kdeplot(data = plot_data, x = plot_data["x"], y = plot_data["y"], hue = plot_data[colour_property], fill = True, thresh=0, levels=50)
-        ## Simple stuff
 
         divnorm = mpl.colors.TwoSlopeNorm(vmin = 0, vcenter = 0.5, vmax = 1)
 

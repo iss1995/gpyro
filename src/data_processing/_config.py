@@ -1,4 +1,4 @@
-import os
+import os,sys
 import warnings
 import numpy as np
 from scipy.optimize import Bounds
@@ -7,8 +7,13 @@ from datetime import datetime
 def config():
         warnings.filterwarnings("ignore")
 
-        PATH_TO_PARENT = "./"
-        FILES_FOLDER = PATH_TO_PARENT+"./Gpyro-TD/" #
+        # check if interactive shell
+        if os.isatty(sys.stdout.fileno()):
+                PATH_TO_PARENT = "./"
+        else:
+                PATH_TO_PARENT = "../"
+
+        FILES_FOLDER = PATH_TO_PARENT+"Gpyro-TD/" #
         POINT_TEMPERATURE_FILES = "temperatures/T*.csv" # no time information on thermal imaging camera
         TRAJECTORY_FILES = "Coordinate_Time/Coordinates_T*.csv"
         POINT_COORDINATES = "Coordinate_Time/point_coordinates.csv"
@@ -32,24 +37,29 @@ def config():
 
         d_grid = 27
 
-        G_reg, F_reg, M_reg, output_scale, length_mean, length_var = (1.3494328312494594e-06, 3.8252949492342524e-05, 0.05727953475125568, 1.1575308075243074, 0.5469046384472692, 0.06122193346017071)
-        bounds_m = (np.array([-np.inf, -np.inf, -np.inf, -np.inf, 0]),
-                np.array([0, 0, 0, 0, np.inf ]))
-        params_m0 = -np.ones( (5,) )*0.1 # one for T,Delta_T,amb,in1,in2 # one for T,Delta_T,amb,in1,in2
-        params_m0[-1]= 0.1 # one for T,Delta_T,amb,in1,in2
+        (G_reg, F_reg, M_reg, output_scale, length_mean, length_var) = (10**-1.21, 1.e-05, 10**-2.23, 0.5, 0.1, 0.05) 
+        epochs = 10
+        underestimate_lengthscales = 0
 
-        bounds_g = Bounds([-np.inf, -np.inf, -np.inf, -np.inf, 0.2, 0, -np.inf], 
-                [np.inf, np.inf, np.inf, np.inf, np.inf, np.inf, np.inf ]) 
-        param_g0 = np.ones((7))*0.1
+        param_f0 = np.asarray([1.])
+        bounds_f = Bounds([0.05],[np.inf])
 
-        bounds_f = Bounds([-np.inf, -np.inf, -np.inf, -np.inf, 0.2, 0, -np.inf], 
-                [np.inf, np.inf, np.inf, np.inf, np.inf, np.inf, np.inf ]) 
-        param_f0 = np.zeros((7))
-        param_f0[-3] = 1 # lengthscale
+        param_g0 = np.asarray([0.1,0.1,0.1])
+        bounds_g = ([0, 0, 0],[np.inf, np.inf, np.inf])
 
-        return FILES_FOLDER,POINT_TEMPERATURE_FILES,POINT_COORDINATES,TRAJECTORY_FILES,RESULTS_FOLDER,RESULTS_FOLDER_GP,RESULTS_FOLDER_MODEL,d_grid,bounds_f,F_reg,bounds_g,G_reg,bounds_m,M_reg,output_scale,length_mean,length_var,param_f0,param_g0,params_m0
+        param_m0 = np.asarray([-.1,-.1,-.1, 1])
+        bounds_m = ([-np.inf, -np.inf, -np.inf, 0],[0, 0, 0, np.inf])
 
+        opt_kwargs = {"bounds_f":bounds_f, 
+                "bounds_g":bounds_g, 
+                "bounds_m":bounds_m, 
+                "F_reg":F_reg,
+                "G_reg": G_reg,
+                "M_reg": M_reg,
+                "param_f0": param_f0,
+                "param_g0": param_g0,
+                "param_m0": param_m0,
+                "epochs" : epochs,
+                "perturbation_magnitude" : 0.0}
 
-def configHyperparameters():
-        G_reg, F_reg, M_reg, output_scale, length_mean, length_var = (1.3494328312494594e-06, 3.8252949492342524e-05, 0.05727953475125568, 1.1575308075243074, 0.5469046384472692, 0.06122193346017071)
-        return G_reg, F_reg, M_reg, output_scale, length_mean, length_var
+        return FILES_FOLDER,POINT_TEMPERATURE_FILES,POINT_COORDINATES,TRAJECTORY_FILES,RESULTS_FOLDER,RESULTS_FOLDER_GP,RESULTS_FOLDER_MODEL,d_grid,output_scale,length_mean,length_var,opt_kwargs

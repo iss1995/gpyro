@@ -1,7 +1,6 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import utils.generic_utils as gnu
 import time
 
 import torch
@@ -12,23 +11,810 @@ from math import ceil
 from gpytorch.mlls import SumMarginalLogLikelihood
 from scipy.interpolate import interp1d
 from copy import deepcopy as copy
-from utils.generic_utils import setDevice
-from scipy.optimize import minimize,least_squares
+from utils.generic_utils import setDevice, rolling_window_2D
+from scipy.optimize import minimize,least_squares, Bounds
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LinearRegression
 from numpy.linalg import norm
 
+def objective(e : np.ndarray,y : np.ndarray) -> np.ndarray:
+    """
+    MAPE objective function
+    @param e: error 
+    @param y: target 
+    @return: scalar MAPE
+    """
+    return np.mean( np.abs( (e/np.mean(np.abs(y))))  )
+
+def regFun(a : np.ndarray, regularizer : float ) -> np.ndarray:
+    """ 
+    l2 regularizer. Leave coupling parameter out. 
+    @param a: parameters
+    @param regularizer: regularization strength
+    @return: scalar regularization cost
+    """
+    return regularizer*np.linalg.norm(a[:-1])
+
+class gTerm:
+    def __init__(self,params : np.ndarray or None = None) -> None:
+        """
+        g term 
+        @param params : array with G model parameters
+        """
+        if params is None:
+            self.params = np.ones((3,1))
+        else:
+            self.params = params
+        self.update(self.params)
+    
+    def __call__(self,h : np.ndarray,T : np.ndarray) -> np.ndarray:
+        """
+        @param h : array with heights, dim (n,)
+        @param T : array with Temperatures, dim (n,)
+        @return : array with G model output, dim (n,)
+        """
+        regressor = np.vstack(( np.ones_like(h), 1-h, 1-T)).T #dim (n,3)
+        if len(self.params)>3:
+            out = np.sum(regressor*self.params, axis = -1).squeeze() # dim (n,)
+        else:
+            out = np.matmul(regressor,self.params).squeeze()
+        return out
+    
+    def update(self,params):
+        """
+        Update parameters
+        @param params : array with G model parameters
+        """
+        self.params = np.atleast_2d(params).T
+
+class mTerm:
+    def __init__(self, neighbors : list, params : np.ndarray or None = None, d_grid : int = 27, d_grid_norm : int = 100, delta : np.ndarray or None = None, ambient_T : float= 0) -> None:
+        """
+        m term
+        @param neighbors : list of lists containing idxs to neighboring nodes, e.g. neighbors_i = [j,k,l,m] with j,k,l,m being the idxs of i's neighbors
+        @param params : array with M model parameters
+        @param d_grid : grid spacing in mm
+        @param d_grid_norm : normalization factor for grid spacing
+        @param delta : array with boolean values indicating if node needs delta node or not
+        @param ambient_T : ambient temperature
+        """
+        if params is None:
+            self.params = np.ones((3,1))
+        else:
+            self.params = params
+        self.update(self.params)
+
+        self.neighbors = neighbors
+        self.number_of_neighbors = np.asarray([len(neigh) for neigh in neighbors])
+        self.d_grid = d_grid / d_grid_norm
+        
+        if delta is None:
+            self.delta = np.zeros_like(self.number_of_neighbors).astype(np.bool8)
+            self.delta[self.number_of_neighbors<4] = True
+        else:
+            self.delta = delta
+        
+        self.ambient_T = ambient_T
+        
+        # build map between neighbors
+        self.neighbor_Ts = np.zeros((len(neighbors),4)) 
+        self.idx_map = np.full_like(self.neighbor_Ts,-1).astype(np.int64)
+        
+        # create map
+        for i,node_neighbors in enumerate(neighbors):
+            for j,node_neigbor in enumerate(node_neighbors):
+                self.idx_map[i,j] = node_neigbor
+        
+        # which elements are still nan?
+        self.no_connections = self.idx_map < 0
+        self.idx_map[self.no_connections] = 0 
+        
+
+    def __call__(self,T : np.ndarray) -> np.ndarray:
+        """
+        @param T : array with Temperatures, dim (n,)
+        @return : array with M model output, dim (n,)
+        """
+        self.neighbor_Ts = T[self.idx_map]
+        self.neighbor_Ts[self.no_connections] = 0 # zero out the non existing connections
+        laplacians = (self.number_of_neighbors*T - np.sum(self.neighbor_Ts, axis = -1))/(self.d_grid) # dim (n,)
+        regressor = np.vstack(( T, laplacians, (T - self.ambient_T)*self.delta)).T #dim (n,3)
+        if len(self.params)>3:
+            out = np.sum(regressor*self.params, axis = -1).squeeze() # dim (n,)
+        else:
+            out = np.matmul(regressor,self.params).squeeze()
+        
+        return out
+    
+    def update(self,params : np.ndarray) -> None:
+        """
+        Update parameters
+        @param params : array with M model parameters
+        """
+        self.params = np.atleast_2d(params).T
+    
+    def updateTambient(self,ambient_T : float) -> None:
+        """
+        Update ambeinet temperature
+        @param ambient_T : ambient temperature
+        """
+        self.ambient_T = ambient_T
+    
+    def calculateLaplacians(self,T: np.ndarray) -> np.ndarray:
+        """
+        for training
+        @param T : array with Temperatures
+        """
+        T = np.atleast_2d(T)
+        neighbor_Ts = T[self.idx_map,:]
+        neighbor_Ts[self.no_connections,:] = 0 # zero out the non existing connections
+        laplacians = (np.multiply(self.number_of_neighbors,T.T).T - np.sum(neighbor_Ts, axis = 1))/(self.d_grid) # dim (n,N)
+        return laplacians
+    
+    def oneStepPropagation(self,T,laplacians,deltas):
+        """
+        for training
+        @param T : array with Temperatures
+        @param laplacians : array with laplacians
+        @param deltas : boolean array indicating the need of deltas
+        """
+        regressor = np.vstack(( T, laplacians, (T - self.ambient_T)*deltas)).T #dim (N,3)
+        return np.matmul(regressor,self.params).squeeze() # dim (N,)
+
+class fTerm:
+    def __init__(self, bell_resolution : int = 101, params : np.ndarray or None  = None) -> None:
+        """
+        f term
+        @param bell_resolution : int with length of peak intervals' used to create the excitation signal. If too short, then the peaks won't fit 
+        @param params : array with 1 model parameters ( lengthscale)
+        """
+        if params is None:
+            self.params = np.ones((1,))
+        else:
+            self.params = params
+        self.update(self.params)
+
+        self.bell_resolution = bell_resolution
+    
+    def __call__(self, peak_idxs : list, array_length : int, multiple_params = False):
+        """
+        @param peak_idxs : list of peaks at each node
+        @param T : array with Temperatures, dim (n,)
+        @param multiple_params : boolean indicating if multiple lengthscale parameters are used. If true, then params should be provided
+        @return : array with F model output, dim (n,)
+        """
+        out = []
+        if not multiple_params:
+            params = np.full(len(peak_idxs), self.params)
+        else:
+            params = self.params
+
+        for (node_peaks,param) in zip(peak_idxs,params):
+            out.append( Fsequence( node_peaks, param, array_length, bell_resolution = self.bell_resolution) )
+        return out
+    
+    def update(self,params : np.ndarray) -> None:
+        """
+        Update parameters
+        @param params : array with 1 model parameters ( lengthscale)
+        """
+        self.params = params
+
+class totalModel:
+    def __init__(self, f_seq :np.ndarray , h : np.ndarray , g: gTerm, m : mTerm, N : int = -1, theta_g :np.ndarray or None = None,\
+                                 theta_m :np.ndarray or None = None, theta_p :np.ndarray or None = None,Dt : float = 0.5) -> None:
+        """
+        @param f_seq : array with precalculated attention values, dim (n,N)
+        @param h : array with torch heights, dim (n,N)
+        @param g : gTerm object
+        @param m : mTerm object
+        @param N : int with extrapolation horizon
+        @param theta_g : array with g model parameters, dim (n,N)
+        @param theta_m : array with m model parameters, dim (n,N)
+        @param theta_p : array with p model parameters, dim (n,N)
+        @param Dt : float with time step
+        """
+
+        if N == -1 or N>len(f_seq):
+            self.N = len(f_seq[0])
+        else:
+            self.N = N
+        
+        self.g = g
+        if theta_g is None:
+            self.theta_g = np.ones((N,3))
+        else:
+            self.theta_g = theta_g
+        self.g.update(theta_g)
+        
+        self.m = m
+        if theta_m is None:
+            self.theta_m = np.ones((N,3))
+        else:
+            self.theta_m = theta_m
+        self.m.update(theta_m)
+        
+        if theta_p is None:
+            self.theta_p = np.ones((N,1))
+        else:
+            self.theta_p = theta_p
+
+        self.f_seq = f_seq
+        self.h = h
+        
+        self._instantiate_h_int(h,self.N,Dt)
+        self._instantiate_f_int(f_seq,self.N,Dt)
+        self._instantiate_theta_m_int(theta_m,self.N,Dt)
+        self._instantiate_theta_g_int(theta_g,self.N,Dt)
+        self._instantiate_theta_p_int(theta_p,self.N,Dt)
+    
+    def __call__(self,t : float,T : np.ndarray) -> np.ndarray:
+        """
+        one step propagation
+        @param t : time
+        @param T : array with Temperatures, dim (n,)
+        @return : temperatures at next timestep, dim (n,)
+        """
+        h_t = self.h_int(t)
+        f_t = self.f_int(t)
+        
+        theta_M = self.theta_m_int(t)
+        theta_G = self.theta_g_int(t)
+        theta_p = self.theta_p_int(t)
+
+        self.updateM(theta_M)
+        self.updateG(theta_G)
+
+        DT = (1-f_t) * self.m(T) + theta_p * f_t * self.g(h_t,T)
+        return DT + T
+    
+    def updateM(self,theta_m : np.ndarray) -> None:
+        """
+        update m model parameters
+        @param theta_m : array with m model parameters
+        """
+        self.theta_m = theta_m
+        self.m.update(theta_m)
+
+    def updateG(self,theta_g : np.ndarray) -> None:
+        """
+        update g model parameters
+        @param theta_g : array with g model parameters
+        """
+        self.theta_g = theta_g
+        self.g.update(theta_g)
+
+    def _instantiate_h_int(self,h,N,Dt) -> None:
+        self.h_int = interp1d(np.linspace(0,N*Dt-Dt,N),h)
+        return None        
+
+    def _instantiate_f_int(self,f,N,Dt) -> None:
+        self.f_int = interp1d(np.linspace(0,N*Dt-Dt,N),f)
+        return None
+
+    def _instantiate_theta_m_int(self,theta_m,N,Dt) -> None:
+        self.theta_m_int = interp1d(np.linspace(0,N*Dt-Dt,N),theta_m, axis = 1)
+        return None
+
+    def _instantiate_theta_g_int(self,theta_g,N,Dt) -> None:
+        self.theta_g_int = interp1d(np.linspace(0,N*Dt-Dt,N),theta_g, axis = 1)
+        return None
+
+    def _instantiate_theta_p_int(self,theta_p,N,Dt) -> None:
+        self.theta_p_int = interp1d(np.linspace(0,N*Dt-Dt,N),theta_p)
+        return None       
+
+class loss_F:
+    def __init__(self, state_excitation_idxs : list, excited_points : list, regularizer : float, f : fTerm, parameter_scale : float = 10) -> None:
+        """
+        class for optimization of f model parameters
+        @param state_excitation_idxs : list of lists with indices of peaks excited nodes 
+        @param excited_points : list of point objects that are excited
+        @param regularizer : float with regularizer
+        @param f : fTerm object
+        @param parameter_scale : float with parameter scale
+        """
+        self.state_excitation_idxs = state_excitation_idxs 
+        self.excited_points = excited_points 
+        self.f = f
+        self.regularizer = regularizer
+        self.parameter_scale = parameter_scale
+
+    
+    def __call__(self, params : np.ndarray) -> float:
+        """
+        Callable for optimization
+        @param params : array with f model parameters, dim (n,)
+        @return : loss value
+        """
+        # update lengthscale
+        self.f.update(params*self.parameter_scale)
+        
+        # check if bell resolution is too little
+        f_span = 3*ceil(params*self.parameter_scale)
+        if f_span>self.f.bell_resolution/2:
+            self.f.bell_resolution = 2*f_span
+
+        # calculate attention
+        half_resolution = int(self.f.bell_resolution/2)
+        f_segment = self.f([[half_resolution]], self.f.bell_resolution)[0]
+
+        # compare attention to data
+        residuals = 0.
+        for (idxs,p) in zip(self.state_excitation_idxs,self.excited_points):
+            array_len = len(p.T_t_use)
+            if len(idxs) == 0:
+                continue
+            new_residuals = 0.
+            for idx in idxs:
+                starting_idx = np.max([ 0, half_resolution - idx ] )
+                ending_idx = np.min([ array_len - idx, half_resolution ] )
+                f_segment_eval = f_segment[starting_idx : half_resolution + ending_idx ] # +1 is correct?
+                
+                T_segment_eval = p.T_t_use[idx - half_resolution + starting_idx : idx + ending_idx]
+                coef = np.max(T_segment_eval) - T_segment_eval[0]
+                error = (coef*f_segment_eval + np.full_like(f_segment_eval,T_segment_eval[0])) - T_segment_eval
+                new_residuals += np.mean(error**2)
+            
+            new_residuals /= len(idxs)
+            residuals += new_residuals + self.regularizer * np.linalg.norm(params)
+    
+        return residuals
+
+class loss_G:
+    def __init__(self, state_excitation_idxs : list, excited_points : list, g :gTerm, f:fTerm, lengthscale : float = 10, \
+                                    regularizer : float = 1e-2, parameter_scale : float = 1, test_ratio : float = 0.) -> None:
+        """
+        class for optimization of g model parameters
+        @param state_excitation_idxs : list of lists with indices of peaks excited nodes 
+        @param excited_points : list of point objects that are excited
+        @param g : gTerm object
+        @param f : fTerm object
+        @param lengthscale : float with lengthscale
+        @param regularizer : float with regularizer
+        @param parameter_scale : float with parameter scale
+        @param test_ratio : float with ratio of test data
+        """
+       
+        self.state_excitation_idxs = state_excitation_idxs
+        self.g = g 
+        self.f = f
+        f.update(lengthscale)
+        self.lengthscale = lengthscale
+        self.parameter_scale = parameter_scale
+        self.excited_points = excited_points
+        self.regularizer = regularizer
+        self.test_ratio = test_ratio
+        self.best_test_score = 1e10
+    
+    def __call__(self, params : np.ndarray) -> float:
+        """
+        Callable for optimization
+        @param params : array with g model parameters, dim (n,)
+        @return : loss value
+        """
+       
+        # update lengthscale
+        self.g.update(params*self.parameter_scale)
+        # calculate attention
+        half_resolution = int(self.f.bell_resolution/2)
+        f_segment = self.f([[half_resolution]], self.f.bell_resolution)[0] # TODO: why different [] from loss_f?
+        
+        # learn g with attention
+        residuals = 0.
+        all_f = []  
+        all_h = []  
+        all_T = []  
+        max_length = 0
+        for (idxs,p) in zip(self.state_excitation_idxs,self.excited_points):
+            if len(idxs) == 0:
+                continue
+
+            for idx in idxs:
+                # align and gather features
+                activated_band = 3 * np.ceil(self.lengthscale).astype(np.int64)
+
+                starting_idx_local =  half_resolution - activated_band + np.max([0,  activated_band - idx ] )
+                ending_idx_local = half_resolution
+
+                span = ending_idx_local - starting_idx_local
+
+                starting_idx_global = idx - span
+                ending_idx_global = idx
+
+                all_f.append( f_segment[starting_idx_local : ending_idx_local ] ) # +1 is correct?
+                all_T.append( p.T_t_use[starting_idx_global : ending_idx_global] )
+                all_h.append( p.excitation_delay_torch_height_trajectory[starting_idx_global : ending_idx_global] )
+
+                max_length = np.max([ max_length, ending_idx_global - starting_idx_global])
+        
+
+        # create feature matrix
+        if max_length>0:
+            if self.test_ratio>0:
+                idx_train,idx_test = train_test_split( np.arange(len(all_f)), test_size=self.test_ratio, shuffle=True )
+            else:
+                rng = np.random.default_rng()
+                idx_train = rng.choice(len(all_f), int(len(all_f)*(1-self.test_ratio)), replace=False)
+                idx_test = []
+            # zero padding for training sequences with less than max_length elements 
+            Ts = np.zeros(( max_length, len(all_f)))
+            Hs = np.zeros_like(Ts)
+            Fs = np.zeros_like(Ts)
+
+            for i,( T_node_idx,H_node_idx,F_node_idx)  in enumerate(zip(all_T,all_h,all_f)):
+                Ts[:len(T_node_idx),i] = T_node_idx
+                Hs[:len(T_node_idx),i] = H_node_idx
+                Fs[:len(T_node_idx),i] = F_node_idx
+
+            # unroll g
+            residuals = self._unrollResponse(Ts,Fs,Hs,idx_train) + self.regularizer * np.linalg.norm(params)
+            if len(idx_test)>0:
+                test_residuals = self._unrollResponse(Ts,Fs,Hs,idx_test)
+            else:
+                test_residuals = self._unrollResponse(Ts,Fs,Hs,idx_train) 
+            
+            if test_residuals < self.best_test_score:
+                self.best_test_score = test_residuals
+                self.best_params = params 
+        
+        else:
+            self.best_params = params*0. 
+            residuals = 0.
+        return residuals
+    
+    def _calculateFsequences(self) -> None:
+        excitation_array = np.asarray([p.input_idxs for p in self.excited_points])
+        self.f_seq = np.asarray(self.f(excitation_array,len(excitation_array)))[:,self.state_level_idxs]
+        return None
+
+    def _unrollResponse(self,Ts,Fs,Hs,node_idx_pairs) -> float:
+        
+        response = Ts[ 0, node_idx_pairs]
+        history = [response.copy()]
+        for (f_s, h_s) in zip( Fs[:,node_idx_pairs], Hs[:,node_idx_pairs]):
+            response += f_s * self.g(h_s, response)
+            history.append(response.copy())
+
+        # if Ts is 0 (excitation interval finished), then history is 0 too
+        history = np.vstack(history)[:-1,:]
+        history[np.where(Ts[:,node_idx_pairs]==0)] = 0
+
+        error = history - Ts[ :, node_idx_pairs]
+        residuals = np.mean( (error / np.abs( Ts[ :, node_idx_pairs] + 1e-4))**2 )
+        return residuals
+    
+    def _dbgResponse(self,range_start, range_end, Ts, history, node_idx_pairs) -> None:
+        for idx_ in range(range_start,range_end,1):
+            plt.figure()
+            T_ = Ts[:,node_idx_pairs[idx_]]
+            plt.plot(T_, label = "nominal")
+            plt.plot(history[:,idx_], label = "predicted")
+            plt.title(idx_)
+        plt.legend()
+        return None
+
+class loss_M:
+    def __init__(self, state_level_idxs : list, training_points : list, m :mTerm,  g :gTerm, f:fTerm, lengthscale = 10, theta_G = np.array([0,0,0]) , regularizer = 1e-2, \
+                                N = 1, parameter_scale = 1,test_ratio = 0.25,random_state = 934, warp_loss_ = False, wrapping_fun = np.arctan, grad_relaxation = 0.1) -> None:
+
+        """
+        class for optimization of m model parameters
+
+        @params state_level_idxs: list of lists with indices poinitng to each state
+        @params training_points: list of points that are to be used for training
+        @params m: mTerm object
+        @params g: gTerm object
+        @params f: fTerm object
+        @params lengthscale: lengthscale of the RBF kernel
+        @params theta_G: parameters of the gTerm
+        @params regularizer: regularization parameter
+        @params N: number of points to be used for training
+        @params parameter_scale: scale of the parameters
+        @params test_ratio: ratio of test data
+        @params random_state: random state
+        @params warp_loss_: if True, the loss is warped by the wrapping function
+        @params wrapping_fun: function that is used to warp the loss
+        @params grad_relaxation: relaxation of the gradient
+        """
+
+        self.m = m
+        self.g = g 
+        self.f = f
+
+        self.f.update(lengthscale)
+        self.g.update(theta_G)
+
+        self.training_points = training_points
+        self.state_level_idxs = state_level_idxs
+        self.parameter_scale = parameter_scale
+        self.regularizer = regularizer
+        self.N = N
+        self._createFeatureTargets(test_ratio,random_state)
+        self.best_test_score = 1e10
+        self.best_params = None
+        self.grad_relaxation = grad_relaxation
+        if warp_loss_:
+
+            self.warp_loss = lambda x: wrapping_fun(grad_relaxation * x**2)
+        else:
+            self.warp_loss = lambda x: grad_relaxation*x 
+    
+    def __call__(self, params : np.ndarray) -> float:
+        """
+        @params params: parameters of the mTerm
+        @return: loss
+        """
+        # update lengthscale
+        self.m.update(params[:-1]*self.parameter_scale)
+
+        if self.N == 1:
+            # TODO : current implementation of M propagates system by one timestep and accepts a thermal field as input. Rethink of how to implement 
+            m_val = self.m.oneStepPropagation( self.x, self.laplacians, self.deltas)
+            preds = (1-self.f_seq[self.train_idxs])*m_val[self.train_idxs] + params[-1]*self.f_seq[self.train_idxs]*self.g(self.h[self.train_idxs],self.x[self.train_idxs])
+            error = self.y[self.train_idxs] - preds
+
+            test = (1-self.f_seq[self.test_idxs])*m_val[self.test_idxs] + params[-1]*self.f_seq[self.test_idxs]*self.g(self.h[self.test_idxs],self.x[self.test_idxs])
+
+            test_error = self.y[self.test_idxs] - test
+
+            loss = objective(error,self.y[self.train_idxs]) + regFun(params,self.regularizer)
+            if len(self.test_idxs)>0:
+                test_loss = objective(test_error,self.y[self.test_idxs])
+            else:
+                test_loss = objective(error,self.y[self.train_idxs])
+        else:
+            assert 1, "N>1 not implemented."
+
+        if test_loss<self.best_test_score:
+            self.best_params = params
+            self.best_test_score = test_loss
+    
+        return self.warp_loss( loss ) 
+    
+    def _createFeatureTargets(self,test_size : float,random_state : int) -> None:
+        all_temperatures = np.vstack([p.T_t_use for p in self.training_points])
+        all_laplacians = self.m.calculateLaplacians(all_temperatures)
+
+        temperatures = [p.T_t_use[idxs[:-1]] for (p,idxs) in zip(self.training_points,self.state_level_idxs)]
+        delta_map = self.m.delta
+        deltas = [np.ones_like(temp)*delta_val for (temp,delta_val) in zip(temperatures,delta_map)]
+        laplacians = [lap[idxs[:-1]] for (lap,idxs) in zip( all_laplacians, self.state_level_idxs)]
+        delta_temperatures = [np.diff(p.T_t_use[idxs]) for (p,idxs) in zip(self.training_points,self.state_level_idxs)]
+        heights = [p.excitation_delay_torch_height_trajectory[idxs[:-1]] for (p,idxs) in zip(self.training_points,self.state_level_idxs)]
+        excitation_idxs = [p.input_idxs for p in self.training_points]
+
+        if self.N == 1:
+            self.x = np.hstack(temperatures )
+            self.laplacians = np.hstack(laplacians)
+            self.y = np.hstack(delta_temperatures )
+            self.h = np.hstack(heights)
+            self.deltas = np.hstack(deltas)
+            f_seq = []
+            length = len(self.training_points[0].T_t_use)
+            for (idxs, excite) in zip(self.state_level_idxs,excitation_idxs):
+                f_seq.append( self.f( [excite], length )[0][idxs[0:-1]]  )
+            
+            self.f_seq = np.hstack(f_seq)
+
+            
+        else:
+            self.x = rolling_window_2D(temperatures[:,:-1], self.N)[:,self.state_level_idxs]
+            self.y = rolling_window_2D(delta_temperatures, self.N)[:,self.state_level_idxs]
+
+            self.h = rolling_window_2D(heights,self.N)[:,self.state_level_idxs]
+            self.f_sec = rolling_window_2D(f_seq)
+            
+            
+        idxs = np.arange(len(self.x)).astype(np.int64)
+        if test_size > 0:
+            self.train_idxs,self.test_idxs = train_test_split(idxs, test_size = test_size, shuffle = True, random_state = random_state)
+        else:
+            rng = np.random.default_rng()
+            self.train_idxs = rng.choice(len(idxs), int(len(idxs)*(1-test_size)), replace=False)
+            self.test_idxs = []
+        return None
+
+class GPThetaModel(gpytorch.models.ExactGP):
+    def __init__(self, train_x : torch.Tensor, train_y : torch.Tensor, likelihood :gpytorch.likelihoods, mean_len_prior : float= 0.025, var_len_prior : float = 0.1):
+        """
+        Model for each weight
+        @param train_x: training inputs
+        @param train_y: training targets
+        @param likelihood: likelihood
+        @param mean_len_prior: mean lengthscale prior
+        @param var_len_prior: variance lengthscale prior
+        """
+        
+        super(GPThetaModel, self).__init__(train_x, train_y, likelihood)
+        
+        lengthscale_prior = gpytorch.priors.NormalPrior(mean_len_prior, var_len_prior) # good results 4/8
+        self.mean_module = bilinearMean(train_x,train_y)
+        self.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.MaternKernel(nu=1.5,lengthscale_prior=lengthscale_prior) )
+
+    def forward(self, x : torch.Tensor) -> gpytorch.distributions.MultivariateNormal:
+        """
+        @param x: inputs
+        @return: MultivariateNormal distribution
+        """
+        mean_x = self.mean_module(x)
+        covar_x = self.covar_module(x)
+        return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
+
+class bilinearMean(gpytorch.means.Mean):                                                                                                                                                                        
+    def __init__(self, xs : torch.Tensor, ys : torch.Tensor, batch_shape=torch.Size()):
+        """
+        You need at least 3 datapoints on each direction
+        @param xs: training inputs
+        @param ys: training targets
+        @param batch_shape: batch shape
+        """
+        super().__init__()
+
+        A_p = torch.stack( (xs[-3:], torch.ones((3,))) ).T
+        sol_p,*_ = torch.linalg.lstsq(A_p,ys[-3:])
+        self.w_p = sol_p[0]
+        self.b_p = sol_p[1]
+
+        # linear model for negative states
+        A_n = torch.stack( (xs[:3], torch.ones((3,))) ).T
+        sol_n,*_ = torch.linalg.lstsq(A_n,ys[:3])
+        self.w_n = sol_n[0]
+        self.b_n = sol_n[1]
+        
+    def forward(self, x : torch.Tensor) -> torch.Tensor:
+        """
+        @param x : inputs
+        @return : bilinear mean
+        """
+
+        sigm_p = self.sigmoid(x)
+        sigm_n = 1 - sigm_p
+
+        ones = torch.ones_like(x)
+        return ( self.pos(sigm_p*x,sigm_p*ones) + self.neg(sigm_n*x,sigm_n*ones) ).T
+    
+    def sigmoid(self,x,alpha = 20):
+        return 1/(1+torch.exp(-alpha*x))
+    
+    def pos(self,x,o):
+        return self.w_p*x + self.b_p*o
+    
+    def neg(self,x,o):
+        return self.w_n*x + self.b_n*o
+    
+def optimizeF( states, excited_points : list,  param_f0 : np.ndarray, bounds : tuple or Bounds , \
+                f : fTerm, F_reg : float = 1e-2, underestimate_lengthscales : float = 0)-> np.ndarray:
+    """
+    Optimize the f term
+    @param states: iterable with states
+    @param excited_points: excited points
+    @param param_f0: initial parameters
+    @param bounds: bounds for the parameters
+    @param f: f term
+    @param F_reg: regularization for the f term
+    @param underestimate_lengthscales: underestimate the lengthscale by this factor
+    @return: optimized parameters
+    """
+    #  learn F
+    excitations = []
+    for state_level in states:
+        point_excitations_on_level_map = [] # 1 array for each point telling you which peaks to consider
+        for p in excited_points:
+            point_excitations_on_level_map.append(  p.input_idxs[ p.excitation_delay_torch_height == state_level ] )
+    
+        excitations.append( point_excitations_on_level_map )
+
+    ## learn the lengthscale
+    parameters_per_state_level = []
+    for i,state_level_idxs in enumerate(excitations):
+        optimizer = loss_F(state_level_idxs,excited_points, regularizer= F_reg, f = f)
+        res = minimize( optimizer , param_f0, bounds= bounds, method= "L-BFGS-B", tol = 1e-12 )
+        param_f0 = res.x
+        parameters_per_state_level.append(res.x[0]) # omit the last one
+
+        if i == 0:
+            first_state_param_f0 = res.x
+
+    ## scale lengthscales
+    lengthscales = 10* np.abs(parameters_per_state_level ) * (1-underestimate_lengthscales)
+    return lengthscales, excitations, param_f0
+
+def optimizeG( f : fTerm, g : gTerm, states, excitations : list, excited_points : list, param_g0 : np.ndarray, \
+                            lengthscaleModel : interp1d, bounds : tuple or Bounds , G_reg = 1e-2 ,test_ratio = 0.0):
+    """
+    Optimize the g term
+    @param f: f term
+    @param g: g term
+    @param states: iterable with states
+    @param excitations: list of lists with indices of excited points
+    @param excited_points: list of point objects that are excited
+    @param param_g0: initial parameters
+    @param lengthscaleModel: lengthscale model
+    @param bounds: bounds for the parameters
+    @param G_reg: regularization for the g term
+    @param test_ratio: ratio of test points
+    @return: optimized parameters
+    """
+    #  learn G
+    ## learn the lengthscale
+    parameters_per_state_level = []
+    fun_scores_per_state_level = []
+    for i,(state_level_idxs,state) in enumerate(zip(excitations,states)):
+        lengthscale = lengthscaleModel(state)
+        optimizer = loss_G(state_level_idxs, excited_points, g, f, regularizer = G_reg, lengthscale = lengthscale, test_ratio=test_ratio)
+        res = least_squares( optimizer , param_g0, bounds= bounds, ftol = 1e-12, method= "trf", loss = "arctan")
+        if not np.all(optimizer.best_params==0):
+            param_g0 = res.x
+        parameters_per_state_level.append(optimizer.best_params) # omit the last one
+        fun_scores_per_state_level.append(optimizer.best_test_score)
+        if i == 0:
+            first_state_param_g0 = res.x
+
+    # param_g0 = first_state_param_g0
+    coefficients = np.asarray(parameters_per_state_level)
+    fun_scores = np.asarray(fun_scores_per_state_level)
+    return coefficients, param_g0, fun_scores
+
+def optimizeM( m : mTerm, f : fTerm, g : gTerm, states, training_points : list,  param_m0 : np.ndarray, lengthscaleModel : interp1d, gCoefModel : interp1d,\
+     bounds: tuple or Bounds , M_reg : float = 1e-2,test_ratio : float = 0.0, wrapping_function = np.arctan, wrap_function_ : bool = False):
+    """
+    Optimize the m term
+    @param m: m term
+    @param f: f term
+    @param g: g term
+    @param states: iterable with unique state values
+    @param training_points: list of point objects that are used for training
+    @param param_m0: initial parameters
+    @param lengthscaleModel: lengthscale model
+    @param gCoefModel: g coefficients model
+    @param bounds: bounds for the parameters
+    @param M_reg: regularization for the m term
+    @param test_ratio: ratio of test points
+    @param wrapping_function: function to wrap the loss function
+    @param wrap_function_: whether to wrap the loss function
+    @return: optimized parameters
+    """
+    # find state levels for each point
+    layer_idxs = []
+    for state in states:
+        point_layer_idxs = []
+        for p in training_points:
+            tmp = np.where(p.excitation_delay_torch_height_trajectory == state)[0]
+            point_layer_idxs.append( tmp.astype(np.int64) )
+        layer_idxs.append(point_layer_idxs)
+    
+    options = {'maxcor': 10, 'gtol': 1e-12, 'eps': 1e-10, 'maxfun': 15000, 'maxiter': 15000, 'iprint': 50, 'maxls': 20, 'finite_diff_rel_step': None}
+    parameters_per_state_level = []
+    fun_scores_per_state_level = []
+    for i,(state_level_idxs,state) in enumerate(zip(layer_idxs,states)):
+        lengthscale = lengthscaleModel(state)
+        theta_G = gCoefModel(state)
+        optimizer = loss_M(state_level_idxs, training_points, m, g, f,lengthscale = lengthscale, theta_G = theta_G, regularizer = M_reg, test_ratio=test_ratio, warp_loss_= wrap_function_, wrapping_fun = wrapping_function)
+        res = least_squares( optimizer , param_m0, ftol = 1e-12, bounds= bounds, method= "trf", loss = "arctan")
+        param_m0 = res.x
+        parameters_per_state_level.append(optimizer.best_params) # omit the last one
+        fun_scores_per_state_level.append(optimizer.best_test_score)
+        if i == 0:
+            first_state_param_m0 = res.x
+
+    param_m0 = first_state_param_m0
+    coefficients = np.asarray(parameters_per_state_level)
+    fun_scores = np.asarray(fun_scores_per_state_level)
+    return coefficients, param_m0, fun_scores
+
 def pointsOnBoundaries_(experiment):
+    """
+    find the points on the boundaries of the domain
+    @param experiment: experiment object
+    @return: list with bools indicating if a point is on the boundaries
+    """
     
     points_used_for_training = [p for p in experiment.Points if p._hasNeighbors_()]
     coordinate_list = [p.coordinates for p in points_used_for_training]
     coordinates = np.vstack(coordinate_list)
     boundaries = findDomainLimits(coordinates)
     on_boundary_ = [_isOnBoundary_(p,boundaries) for p in points_used_for_training]
-    
-    # find cornenrs as well
-    # on_corner_ = [_isOnCorner_(p,boundaries) for p in points_used_for_training]
-    # on_corner_ = [False for p in points_used_for_training]
 
     return on_boundary_
 
@@ -56,10 +842,11 @@ def _isOnBoundary_(p,boundaries):
 
     return periphery_
 
-def splitToLayers( points_used_for_training, tool_height_trajectory, debug = True):
+def splitToLayers( points_used_for_training : list, tool_height_trajectory, debug = True):
     """
-    @returns layer_idxs: list with arrays of idxs for different layers
-    @returns unique_height_values: height of each layer
+    @params points_used_for_training: list of points used for training
+    @params tool_height_trajectory: tool height trajectory
+    @returns list of indices that correspond to unique heights/states 
     """
     # find all deposition height levels -> you have to look at points that get ecited 
     excited_points = [ p for p in points_used_for_training if len(p.input_idxs)>0]
@@ -81,121 +868,22 @@ def splitToLayers( points_used_for_training, tool_height_trajectory, debug = Tru
 
     return layer_idxs, height_levels
 
-class optimizeFandG:
-    
-    def __init__(self,height_level_idxs,excited_points,lengthscale = None, regularizer = 0.001):
-        self.height_level_idxs = height_level_idxs 
-        self.excited_points = excited_points 
-        self.lengthscale = lengthscale
-        self.regularizer = regularizer
-
-    def __call__(self,params):
-        """
-        return the sum over all points of the residuals that the given parameter set resulted in. When you want to define the lengthscale, fit the bell
-        to the temperature peaks while for tuning the input model parameters fit the dTdt by extrapolation. 
-        """
-        (a,b,c,d,lengthscale,e,f) = params
-        resolution = 100
-        if self.lengthscale is not None:
-            lengthscale = self.lengthscale
-            input_feature_span = 3*int(lengthscale) # how many non 0 elements to expect in the half bell 
-            if input_feature_span>resolution/2:
-                resolution = 2*input_feature_span
-            bellDer = unitBellFunctionDerivative( lengthscale, resolution = resolution)
-            bell = unitBellFunctionDerivative( lengthscale, resolution = resolution)
-            # keep only positive part for input, let negative be handled by the rest
-            bell[bellDer<0] = 0
-
-        else:
-            lengthscale *=10
-            input_feature_span = 3*int(lengthscale) # how many non 0 elements to expect in the half bell 
-            if input_feature_span>resolution/2:
-                resolution = 2*input_feature_span
-            bell = unitBellFunction( lengthscale, resolution = resolution)
-            bellDer = unitBellFunctionDerivative( lengthscale, resolution = resolution)
-            bell[bellDer<0] = 0
-            a,b,c,d,e = 1, 0, 0, 0, 0
-
-        noe = int( len(bell)/2 )
-
-        residuals = 0
-        for (idxs,p) in zip(self.height_level_idxs,self.excited_points):
-            # in this loop level you have all the idxs mapping to peaks in the thermal data for one node and height level
-            if len(idxs) == 0:
-                continue
-            new_residuals = 0
-            for idx in idxs:
-                calculated_input,excitation_heights,T,T_start = calculateGFeatures(idx,noe,p,bell,lengthscale,resolution)
-                
-                # propagate T to see how does your input model work
-                if self.lengthscale is not None:
-                    input_model = []
-                    state = T[0]
-                    for (excitation,height) in zip(calculated_input,excitation_heights):    
-                        state += G(a,b,c,d,e,F = excitation, h = height, T = state)
-                        input_model.append(state)
-                else:
-                    input_model = G(a,b,c,d,e, F = calculated_input,h = excitation_heights,T = T)
-
-
-                # evaluate residuals
-                learned = np.ones_like(T)* T[0]   + f*np.asarray(input_model)
-                error = learned - T
-                new_residuals += np.mean(error**2)  
-            
-            new_residuals /= len(idxs)
-            residuals += new_residuals + self.regularizer * np.linalg.norm(params)
-        
-        # regularize
-        # residuals += self.regularizer*np.linalg.norm(params) 
-
-        return residuals
-
-    def plotResponse(self,learned,T):
-        time = np.arange(len(learned))
-        plt.plot(time,learned,time,T)
-        plt.show()
-
-def calculateGFeatures(idx,noe,p,bell,lengthscale,resolution):
-    if idx>noe:
-        final_idx = np.min([ idx + noe + 1 , len(p.T_t_use) - 1 ])
-        bell_final_idx = resolution + np.min([ (len(p.T_t_use) - 1) - (idx + noe + 1) , 0  ])
-        T = p.T_t_use[ idx-noe+1 : final_idx ] 
-        dTdt = T - p.T_t_use[ idx - noe : final_idx - 1 ]
-        excitation_heights = p.excitation_delay_torch_height_trajectory[ idx - noe + 1 : final_idx]
-        calculated_input = bell [:bell_final_idx]
-        T_start_idx = noe - int(lengthscale) * 3
-        T_start = np.ones_like(calculated_input)*T[T_start_idx]
-        dummy = 1
-    else:
-        T = p.T_t_use[ 1 : idx + noe +1 ]
-        dTdt = T - p.T_t_use[ : idx + noe ]
-        excitation_heights = p.excitation_delay_torch_height_trajectory[ 1 : idx + noe + 1 ]
-        calculated_input = bell[- (noe+idx):]
-        T_start_idx = 0
-        T_start = np.ones_like(calculated_input)*T[T_start_idx]
-        dummy = 1
-    
-    return calculated_input,excitation_heights,T,T_start
-    
-def G(a,b,c,d,e,F,h,T,T_start = None):
+def Fsequence( peak_idxs : list, lengthscales : np.ndarray , array_length : int, bell_resolution : int = 101) -> np.ndarray:
     """
-    @params a,b,c,d for model the coefficient
+    Generate F sequence for each node.
+    @param peak_idxs: list of peak idxs for each node
+    @param lengthscales: array of lengthscale for each node
+    @param array_length: length of the array to be generated
+    @param bell_resolution: resolution of the bell curve
+    @returns F: F sequence for each node
     """
 
-    coef =  a + b *(1 - h) + c * (1 - T) + d * h * (1 - T)* 0
-    out = F * coef
-    
-    return out
-
-def Fsequence(peak_idxs,lengthscales,array_length,bell_resolution = 101):
-
+    lengthscales = np.atleast_1d(lengthscales)
     out = np.zeros((array_length,))
     for (peak_idx,lengthscale) in zip(peak_idxs,lengthscales):
-
-        # print(f"DEBUG idx {peak_idx}")
+        assert peak_idx<array_length, "peak index larger than the array length"
         # form the right half-bell
-        input_feature_span = 3*ceil(lengthscale) # how many non 0 elements to expect in the half bell 
+        input_feature_span = 3*np.ceil(lengthscale).astype(np.int64) # how many non 0 elements to expect in the half bell 
         if input_feature_span>bell_resolution/2:
             bell_resolution = 2*input_feature_span
         bell_top_idx = int(bell_resolution/2) + 1 # where the bell top is
@@ -213,55 +901,14 @@ def Fsequence(peak_idxs,lengthscales,array_length,bell_resolution = 101):
             final_idx_with_non0_value = len(more_than_0) - np.argmax(more_than_0) - 1
 
             # move first idx to a non-written idx
-            # first_half_bell_idx_on_input_trajectory += final_idx_with_non0_value + 1
             first_half_bell_idx_on_input_trajectory += final_idx_with_non0_value 
             first_half_bell_idx_on_bell = final_idx_with_non0_value
-        
-        # check if your first peak in bell trajectory is 0
-        # elif first_half_bell_idx_on_input_trajectory==0 :
-        #     first_half_bell_idx_on_bell = input_feature_span - peak_idx    
+
         
         # insert the half-bell to the input sequence
         out[ first_half_bell_idx_on_input_trajectory : peak_idx ] = half_bell_shape [ first_half_bell_idx_on_bell :  ]
 
     return out
-
-class optimzeM:
-    def __init__(self,x_train,x_test,y_train,y_test,regularizer,min_test_loss = 1e10):
-
-        self.x_train = x_train
-        self.x_test = x_test
-
-        self.y_train = y_train
-        self.y_test = y_test
-
-        self.min_test_loss = min_test_loss
-        self.regularizer = regularizer
-        self.objFun = None
-        self.regFun = None
-
-    def __call__(self, a):
-        """
-        Save the model achieving the min loss on the test set and return the train loss.
-        """
-
-        train_loss = objFun(a, self.x_train, self.y_train) + regFun(a,self.regularizer)
-        test_loss = objFun(a, self.x_test, self.y_test)
-
-        if test_loss<self.min_test_loss:
-            self.a_star = a
-            self.min_test_loss = test_loss
-
-        return train_loss
-
-    def test(self,a):
-        return objFun(a, self.x_test, self.y_test)
-
-    def setObjFun(self,fun):
-        self.objFun = fun
-
-    def setRegFun(self,fun):
-        self.regFun = fun
 
 def unitBellFunctionDerivative( lengthscale, resolution = 101, center = 0.0):
 
@@ -282,37 +929,29 @@ def unitBellFunction( lengthscale, resolution = 101, center = 0.0):
 
     return out 
 
-def halfBellLegthscaleModel( lengthscale_models, torch_heights_at_excitation ):
-    model = interp1d(torch_heights_at_excitation,lengthscale_models)
+def halfBellLegthscaleModel( lengthscale_models : np.ndarray, states : np.ndarray) -> interp1d:
+    model = interp1d(states,lengthscale_models)
     return model
 
-def modelsForInputCoefs(coefs,heights):
+def modelsForInputCoefs(coefs :np.ndarray, heights : np.ndarray) -> interp1d:
     return interp1d(heights,coefs,axis = 0)
 
-class GPThetaModel(gpytorch.models.ExactGP):
-    def __init__(self, train_x, train_y, likelihood, mean_len_prior = 0.025, var_len_prior = 0.1):
-        super(GPThetaModel, self).__init__(train_x, train_y, likelihood)
-        
-        lengthscale_prior = gpytorch.priors.NormalPrior(mean_len_prior, var_len_prior) # good results 4/8
-        self.mean_module = bilinearMean(train_x,train_y)
-        self.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.MaternKernel(nu=1.5,lengthscale_prior=lengthscale_prior) )
-
-    def forward(self, x):
-        mean_x = self.mean_module(x)
-        covar_x = self.covar_module(x)
-        return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
-
-def GPOpt( models, likelihoods, learning_rate = 0.1, training_iter = 4000, loss_thress = 1e-3, no_improvement_thress = 200, gp_model_to_load = '', _device = None, messages_ = False ):
+def GPOpt( models : gpytorch.models.IndependentModelList, likelihoods : gpytorch.likelihoods.LikelihoodList, learning_rate : float = 0.1, max_training_iter : int = 4000, \
+                            loss_thress : float = 1e-3, no_improvement_thress : int = 200, gp_model_to_load : str = '', _device : str or None = None, messages_ : bool = False ):
     """
-    Implementation for optimization algorithm for GPModels
-    @params models : gpytorch.models.IndependentModelList
-    @params likelihoods : gpytorch.likelihoods.LikelihoodList
-    @params learning_rate : real
-    @params training_iter : int - > maximum number of itterations
-    @params loss_thress : real - > thresshold for no improvement in the marginal likelihood
-    @params gp_model_to_load : string - > name of model to load. if empty then optimize.
-    
-    @returns  copy(models), copy(likelihoods) : copy of models and likelihoods
+    Optimize lists of GPs models and likelihoods.
+    @param models: list of GPyTorch models
+    @param likelihoods: list of GPyTorch likelihoods
+    @param learning_rate: learning rate for the optimizer
+    @param max_training_iter: maximum number of iterations for the optimizer
+    @param loss_thress: threshold for the loss to stop the optimization
+    @param no_improvement_thress: number of iterations without improvement to stop the optimization
+    @param gp_model_to_load: path to a saved model to load
+    @param _device: device to use for the optimization
+    @param messages_: print messages
+    @returns models: list of optimized GPyTorch models
+    @returns likelihoods: list of optimized GPyTorch likelihoods
+    @returns gp_data: GP datapoints
     """
     device = setDevice(_device)
 
@@ -331,7 +970,6 @@ def GPOpt( models, likelihoods, learning_rate = 0.1, training_iter = 4000, loss_
     
     # Use the adam optimizer
     optimizer = torch.optim.Adam(models.parameters(), lr=learning_rate)  # Includes GaussianLikelihood parameters
-    # gpytorch.settings.cholesky_jitter(float = 1e-4)
 
     # "Loss" for GPs - the marginal log likelihood
     mll = SumMarginalLogLikelihood(likelihoods, models)
@@ -348,6 +986,7 @@ def GPOpt( models, likelihoods, learning_rate = 0.1, training_iter = 4000, loss_
             gp_data = pd.read_csv(gp_data_to_load + ".csv", header = None, index_col = None).to_numpy()[0]
             
             new_gp_data = []
+            # extremly ugly way to convert the data to the right type
             for data in gp_data:
                 data = data.replace('[ ','')
                 data = data.replace(' ]','')
@@ -377,8 +1016,9 @@ def GPOpt( models, likelihoods, learning_rate = 0.1, training_iter = 4000, loss_
         models.load_state_dict(state_dict_model)
         likelihoods.load_state_dict(state_dict_likelihoods)
         
+    # optimize
     else:
-        for i in range(training_iter):
+        for i in range(max_training_iter):
             # Zero gradients from previous iteration
             min_loss_prev = min_loss
             optimizer.zero_grad()
@@ -408,11 +1048,11 @@ def GPOpt( models, likelihoods, learning_rate = 0.1, training_iter = 4000, loss_
             else:
                 no_improvement = 0
 
-            loss.backward() #comment for lbfgs
+            loss.backward() 
             if not (i+1)%100:
                 if messages_:
                     print('Iter %d/%d - Loss: %.3f  ' % (
-                        i + 1, training_iter, min_loss
+                        i + 1, max_training_iter, min_loss
                     ))
             optimizer.step()
 
@@ -446,143 +1086,6 @@ def updatePoints(points_used_for_training,points_updated_online,idxs):
     
     return points_updated_online
 
-def learnF( excited_points, states,  bounds, regularizer, param_f0, underestimate_lengthscales = 0):
-
-    excitations = []
-    for state_level in states:
-        point_excitations_on_level_map = [] # 1 array for each point telling you which peaks to consider
-        for p in excited_points:
-            point_excitations_on_level_map.append(  p.input_idxs[ p.excitation_delay_torch_height == state_level ] )
-    
-        excitations.append( point_excitations_on_level_map )
-
-    ## fit lengthscales that look like the bells you see
-    parameters_per_state_level = []
-
-    ## learn the lengthscale
-    for i,state_level_idxs in enumerate(excitations):
-        # optimizer = ifu.optimizeLayerInputParameters(state_level_idxs,excited_points, regularizer= F_reg)
-        optimizer = optimizeFandG(state_level_idxs,excited_points, regularizer= regularizer)
-        res = minimize( optimizer , param_f0, bounds= bounds, method= "L-BFGS-B", tol = 1e-12 )
-        param_f0 = res.x
-        parameters_per_state_level.append(res.x[:-1]) # omit the last one
-
-        if i == 0:
-            first_state_param_f0 = res.x
-
-        # ## for testing
-        # check =optimizeFandG(state_level_idxs,excited_points)
-        # resp = check(param_f0)
-
-    param_f0 = first_state_param_f0
-    # incorporate negative state
-    # if np.any(states<0):
-    #     neg_states = states[states<0]
-    #     for neg_state in neg_states:
-    #         parameters_per_state_level.insert(0,parameters_per_state_level[0])
-    ## scale lengthscales
-    lengthscales = 10* np.abs( [x[4] for x in parameters_per_state_level] ) * (1-underestimate_lengthscales)
-    
-    return lengthscales, excitations, param_f0
-
-def learnG( states, excitations, lengthscaleModel, excited_points, bounds, regularizer, param_g0):
-
-    parameters_per_height_level = []
-    # param_g0 = np.ones((7))*0.1
-    for i,(height_lvl,height_level_idxs) in enumerate(zip(states,excitations)):
-
-        height_lengthscale = lengthscaleModel(height_lvl)
-        optimizer = optimizeFandG(height_level_idxs,excited_points,height_lengthscale,regularizer = regularizer)
-        # optimizer = ifu.optimizeLayerInputParameters(height_level_idxs,excited_points,height_lengthscale,regularizer = G_reg)
-        res = minimize( optimizer , param_g0, bounds= bounds, method= "L-BFGS-B", tol = 1e-12 )
-        G_param = res.x[:-1] # omit the last one
-        parameters_per_height_level.append(res.x[:-1])
-        param_g0 = res.x
-        if i == 0:
-            first_state_param_g0 = res.x
-
-    param_g0 = first_state_param_g0
-    # if np.any(states<0):
-    #     neg_states = states[states<0]
-    #     for neg_state in neg_states:
-    #         parameters_per_height_level.insert(0,parameters_per_height_level[0])
-    coefficients = np.asarray(parameters_per_height_level)[:,:5]
-
-    return coefficients, param_g0
-
-def formFeatureTargetPairs(on_boundary_, lengthscaleModel,ipCoefModel,points_updated_online,d_grid=27,HORIZON=1):
-    ## form features
-    for p in points_updated_online:
-
-        Delta_T = p.Delta_T[1:,:] 
-        L = np.sum(Delta_T,axis=0) / (d_grid/100)
-        overheating = p.Delta_T[0,:] 
-
-        boundary_ = on_boundary_[p.node]
-
-        Delta_T_amb = np.zeros_like(p.Delta_T_ambient[:,:])
-        if boundary_:
-            Delta_T_amb[0,:] = p.Delta_T_ambient[0,:] 
-
-        ## calculate F for point
-        observed_peak_indexes = p.input_idxs
-        lengthscales_for_point_input = lengthscaleModel(p.excitation_delay_torch_height)
-        array_length =  np.max(overheating.shape)
-        F = Fsequence(observed_peak_indexes,lengthscales_for_point_input,array_length,bell_resolution = 100)
-        
-        ## calculate G for point
-        excitation_heights = p.excitation_delay_torch_height_trajectory
-        ip_coef_tr = ipCoefModel(p.excitation_delay_torch_height_trajectory).T
-        G_val = G(*ip_coef_tr, F = F, h = excitation_heights, T = overheating)
-
-        overheating *= (1-F)
-        L *= (1-F)
-        Delta_T_amb *= (1-F)
-
-        point_features = np.vstack( (overheating, L, Delta_T_amb, G_val) ) # 1,1,2,1 features
-        p._setFeatures(point_features)
-
-    xs_train, ys_train, band_state ,section_idxs = gnu.splitDataByState( points_updated_online, HORIZON)  
-    return    xs_train, ys_train, band_state ,section_idxs
-
-def learnM(xs_train,ys_train,m_parameters_per_building_layer_height, bounds, regularizer, param_m0):
-    theta_M = []
-    nog = len(ys_train)
-    # find previous solution
-    a_star_prev = param_m0
-
-    for i,( x_group_train, y_group_train) in enumerate(zip(xs_train,ys_train)):
-        #print(f"Group {i+1}/{nog}:")
-
-        # split to train and test set
-        X_train, X_test, y_train, y_test = train_test_split(x_group_train.T, y_group_train, train_size= 0.75, shuffle = True, random_state = 934)
-
-        # create an optimizer object and run the optimization
-        opt = optimzeM(X_train, X_test, y_train, y_test, regularizer)
-        res = least_squares( opt, param_m0, ftol = 1e-12, bounds= bounds, method= "trf", loss = "arctan")
-
-        # check if current solution is better than the previous one
-        if a_star_prev is not None:    
-            if len(a_star_prev) > i:            
-                new_params = opt.test( opt.a_star )
-                old_params = opt.test(  a_star_prev )
-                if old_params<new_params:
-                    opt.a_star = a_star_prev
-                    
-        # keep solution and convergence metrics
-        theta_M.append(opt.a_star)
-        param_m0 = opt.a_star
-
-        #print(f"\tGroup Optimization completed. Train loss: {res.fun} | Validation loss {opt.min_test_loss}\n ")
-    theta_M = np.asarray(theta_M)
-    return theta_M, param_m0
-
-def objFun(a,x,y): 
-    return np.mean( ((y-a.dot(x.T))/np.mean(np.abs(y)))**2 )
-
-def regFun(a, regularizer ):
-    return regularizer*np.linalg.norm(a[:-1])
-
 def learnDelay(excited_points):
     delays = []
     heights_at_excitation = []
@@ -606,9 +1109,21 @@ def learnDelay(excited_points):
     delay_model.fit( train_x, train_y.squeeze())
     return delay_model
 
-def initializeGPModels( parameters, unique_states, GP_normalizers = None, device_tp_optimize = 'cpu', output_scale = 2, length_mean = 0.025, length_var = 0.1):
+def initializeGPModels( parameters : np.ndarray, unique_states : np.ndarray, GP_normalizers : torch.Tensor = None, device_to_optimize : str = 'cpu',\
+                                                                     output_scale : float = 2, length_mean : float = 0.025, length_var : float = 0.1):
 
-    device = setDevice(device_tp_optimize)
+    """
+    Initialize GP models for each parameter.
+    @param parameters: parameters to be fitted (n_parameters, n_unique_states)
+    @param unique_states: unique states of the system (n_unique_states)
+    @param GP_normalizers: normalizers for the GP models (n_parameters)
+    @param device_to_optimize: device to optimize on (cpu or cuda)
+    @param output_scale: output scale for the GP models
+    @param length_mean: mean of the lengthscale for the GP models
+    @param length_var: variance of the lengthscale for the GP models
+    @return: GP models for each parameter as an IndependentModelList and LikehoodList
+    """
+    device = setDevice(device_to_optimize)
     if torch.cuda.is_available():
         gc.collect()
         torch.cuda.empty_cache()
@@ -620,6 +1135,7 @@ def initializeGPModels( parameters, unique_states, GP_normalizers = None, device
     if GP_normalizers is None:
         GP_weights_normalizers = []
 
+    # Create GP models for each variable
     for i,feature in enumerate(parameters):
 
         feature_tensor = torch.from_numpy(feature.T).to(device = device)
@@ -648,11 +1164,12 @@ def initializeGPModels( parameters, unique_states, GP_normalizers = None, device
             # print(F"DEBUG {output_scale}")
 
             hypers = {
-            'likelihood.noise_covar.noise': 5e-3 * mean_feature.clone().detach().requires_grad_(True),
+            'likelihood.noise_covar.noise': 1e-3 * mean_feature.clone().detach().requires_grad_(True),
             'covar_module.outputscale': output_scale*mean_feature.clone().detach().requires_grad_(True),
             }
             gp_list[-1].initialize(**hypers)
 
+    # Put all models in a container
     models = gpytorch.models.IndependentModelList(*gp_list).float().to(device = device)
     likelihoods = gpytorch.likelihoods.LikelihoodList(*[gp.likelihood for gp in gp_list]).to(device = device)
     if GP_normalizers is None:
@@ -662,7 +1179,13 @@ def initializeGPModels( parameters, unique_states, GP_normalizers = None, device
 
     return models,likelihoods, GP_weights_normalizers, band_nominal_height_tensor, device
 
-def statesForBoundaries( points_used_for_training ,on_boundary_ ):
+def statesForBoundaries( points_used_for_training : list, on_boundary_ : list ):
+    """
+    Define states for the nodes on the boundaries of the domain
+    @param points_used_for_training: list of points used for training
+    @param on_boundary_: list of bools indicating if the point is on the boundary
+    @return: updated points_used_for_training
+    """
     #  find the closest node on grid to boundary points
     nodes_on_boundaries = np.asarray( [p.node for (p,b) in zip(points_used_for_training,on_boundary_) if b] )
     points_on_boundaries = np.asarray( [p for (p,b) in zip(points_used_for_training,on_boundary_) if b] )
@@ -695,41 +1218,6 @@ def statesForBoundaries( points_used_for_training ,on_boundary_ ):
 
     return points_used_for_training
 
-class bilinearMean(gpytorch.means.Mean):                                                                                                                                                                        
-    def __init__(self, xs, ys, batch_shape=torch.Size()):
-        """
-        You need at least 3 datapoints on each direction
-        """
-        super().__init__()
-
-        A_p = torch.stack( (xs[-3:], torch.ones((3,))) ).T
-        sol_p,*_ = torch.linalg.lstsq(A_p,ys[-3:])
-        self.w_p = sol_p[0]
-        self.b_p = sol_p[1]
-
-        # linear model for negative states
-        A_n = torch.stack( (xs[:3], torch.ones((3,))) ).T
-        sol_n,*_ = torch.linalg.lstsq(A_n,ys[:3])
-        self.w_n = sol_n[0]
-        self.b_n = sol_n[1]
-        
-    def forward(self, x):
-
-        sigm_p = self.sigmoid(x)
-        sigm_n = 1 - sigm_p
-
-        ones = torch.ones_like(x)
-        return ( self.pos(sigm_p*x,sigm_p*ones) + self.neg(sigm_n*x,sigm_n*ones) ).T
-    
-    def sigmoid(self,x,alpha = 20):
-        return 1/(1+torch.exp(-alpha*x))
-    
-    def pos(self,x,o):
-        return self.w_p*x + self.b_p*o
-    
-    def neg(self,x,o):
-        return self.w_n*x + self.b_n*o
-    
 def onlineOptimization(layer_idxs, unique_state_values, points_used_for_training, bounds_f, bounds_g, bounds_m, F_reg, G_reg, M_reg, param_f0, param_g0, param_m0, on_boundary_, d_grid ):
     """
     Simulate online optimization by only feeding the system with data streamed on each layer.
@@ -789,61 +1277,109 @@ def onlineOptimization(layer_idxs, unique_state_values, points_used_for_training
 
     return f_parameters_per_building_layer_height, g_parameters_per_building_layer_height, m_parameters_per_building_layer_height, all_training_times_per_state
  
-def batchOptimization(layer_idxs, unique_state_values, points_used_for_training, bounds_f, bounds_g, bounds_m, F_reg, G_reg, M_reg, param_f0, param_g0, param_m0, on_boundary_, d_grid, epochs = 3 ):
+def compareWithPast(prev_best_score : float, current_score : float, best_params : np.ndarray, current_params : np.ndarray):
     """
-    Feed data coming from all layers at once.
+    Compare the current score with the previous best score. If the current score is better, update the best score and the best parameters.
+    @param prev_best_score: previous best score
+    @param current_score: current score
+    @param best_params: best parameters
+    @param current_params: current parameters
+    @return: updated best score and best parameters
     """
+    if len(prev_best_score)==0:
+        prev_best_score = current_score.copy()
+        best_params = current_params.copy()
+    else:
+        change_ = np.mean(prev_best_score) > np.mean(current_score)
+        if change_:
+            prev_best_score = current_score
+            best_params = current_params 
+    return best_params, prev_best_score 
+
+def batchOptimization(states, points_used_for_training : list , m : mTerm, f : fTerm, g : gTerm, param_m0 : np.ndarray, 
+    param_f0 : np.ndarray, param_g0 : np.ndarray, bounds_m : tuple, bounds_f : tuple, bounds_g : tuple, 
+    M_reg : int, F_reg : int, G_reg : int, epochs = 2, verbose = True, perturbation_magnitude = 0.1, wrap_function_ = True, wrapping_function = np.arctan):
+    """
+    Optimize model with all the data gathered in an experiment.
+    @param states: iterable of unique states
+    @param points_used_for_training: list of Points objects that will be used for training
+    @param m: mTerm object
+    @param f: fTerm object
+    @param g: gTerm object
+    @param param_m0: initial parameters for m
+    @param param_f0: initial parameters for f
+    @param param_g0: initial parameters for g
+    @param bounds_m: bounds for m
+    @param bounds_f: bounds for f
+    @param bounds_g: bounds for g
+    @param M_reg: regularization for m
+    @param F_reg: regularization for f
+    @param G_reg: regularization for g
+    @param epochs: number of epochs for training
+    @param verbose: print training loss
+    @param perturbation_magnitude: magnitude of perturbation for the initial parameters
+    @param wrap_function_: wrap loss with a function
+    @param wrapping_function: function to wrap the input to the gp
+    """
+
+    excited_points = [ p for p in points_used_for_training if len(p.input_idxs)>0]
+    g_parameters_per_building_layer_height = []
+    f_parameters_per_building_layer_height = []
+    m_parameters_per_building_layer_height = []
+
+    g_best_scores_per_building_layer_height = np.asarray([])
+    m_best_scores_per_building_layer_height = np.asarray([])
+    theta_G = np.asarray([])
+    theta_M = np.asarray([])
+
     all_training_times_per_state = []
-
-    print("Starting optimization...")
-    points_used_for_training = updatePoints(points_used_for_training,points_used_for_training,layer_idxs[-1])
-
-    # Learn all layers at once 
     for epoch in range(epochs):
-        g_parameters_per_building_layer_height = []
-        f_parameters_per_building_layer_height = []
-        m_parameters_per_building_layer_height = []
-        for (idxs,building_layer_height) in zip( [layer_idxs[-1]], [unique_state_values[-1]]): 
-            # print(f"\tLayer {i}.")
+        if verbose:
+            print(f"epoch {epoch}")
 
-            # update data in points
+        t = time.time()
+        # optimize F
+        theta_F, excitations, param_f0 = optimizeF( states, excited_points, f=f, param_f0=param_f0, bounds=bounds_f, F_reg = F_reg)
 
-            states = np.unique([p.excitation_delay_torch_height_trajectory for p in points_used_for_training])
-            
-            ## find peaks in layer
-            excited_points = [ p for p in points_used_for_training if len(p.input_idxs)>0]
+        # negative states are not excited. Overwrite the weights for a better fit in the gp.
+        state_0_idx = np.argmin(np.abs(states))
+        theta_F[:state_0_idx] = theta_F[state_0_idx]
 
-            t = time.time()
+        lengthscaleModel = halfBellLegthscaleModel( theta_F, states) # underestimate 
+        f.update(theta_F)
+        
+        # optimize G
+        theta_G_new, param_g0, fun_scores_g = optimizeG( f, g, states, excitations, excited_points, param_g0, lengthscaleModel, bounds_g, G_reg = G_reg)
+        theta_G, g_best_scores_per_building_layer_height = compareWithPast(g_best_scores_per_building_layer_height, fun_scores_g, theta_G, theta_G_new)
+        ipCoefModel = modelsForInputCoefs(theta_G, states)
+        
+        # optimize M
+        theta_M_new, param_m0, fun_scores_m = optimizeM( m,f, g, states, points_used_for_training, param_m0 = param_m0,gCoefModel = ipCoefModel, lengthscaleModel = lengthscaleModel, bounds = bounds_m, M_reg = M_reg, wrap_function_=wrap_function_, wrapping_function=wrapping_function)
+        theta_M, m_best_scores_per_building_layer_height = compareWithPast(m_best_scores_per_building_layer_height, fun_scores_m, theta_M, theta_M_new)
 
-            theta_F, excitations, param_f0 = learnF( points_used_for_training, states, bounds = bounds_f, regularizer =  F_reg, param_f0 = param_f0)
-            # negative states are not excited. Overwrite the weights for a better fit in the gp.
-            state_0_idx = np.argmin(np.abs(states))
-            theta_F[:state_0_idx] = theta_F[state_0_idx]
+        # keep the best params
+        if len(m_best_scores_per_building_layer_height)==0:
+            m_best_scores_per_building_layer_height = fun_scores_m
+            theta_M = theta_M_new.copy()
+        else:
+            change_ = m_best_scores_per_building_layer_height > fun_scores_m
+            theta_M[change_,:] = theta_M_new[change_,:] 
 
-            lengthscaleModel = halfBellLegthscaleModel( theta_F, states) # underestimate 
+        elapsed = time.time() - t
+        
+        # assign weight values found
+        f_parameters_per_building_layer_height.append(theta_F)
+        g_parameters_per_building_layer_height.append(theta_G)
+        m_parameters_per_building_layer_height.append(theta_M)
+        all_training_times_per_state.append(elapsed/len(states))
 
-            # learn G
-            theta_G, param_g0 = learnG( states, excitations, lengthscaleModel, excited_points, bounds = bounds_g, regularizer = G_reg, param_g0 = param_g0)
-            # negative states are not excited. Overwrite the weights for a better fit in the gp.
-            theta_G[:state_0_idx,:] = theta_G[state_0_idx,:]
-
-            ipCoefModel = modelsForInputCoefs(theta_G, states)
-
-            # learn m coupled with G and F
-            xs_train, ys_train, band_state ,section_idxs = formFeatureTargetPairs(on_boundary_,lengthscaleModel,ipCoefModel,points_used_for_training,d_grid=d_grid,HORIZON=1)
-
-            theta_M, param_m0 = learnM(xs_train,ys_train,m_parameters_per_building_layer_height, bounds = bounds_m, regularizer = M_reg, param_m0 = param_m0)
-
-            elapsed = time.time() - t
-            all_training_times_per_state.append(elapsed/len(states))
-
-            # negative states are not excited. Overwrite the theta_g for a better fit in the gp.
-            theta_M[:state_0_idx,-1] = theta_M[state_0_idx,-1]
-            # boundaries are only in negative states. Overwrite the theta_g for a better fit in the gp.
-            theta_M[state_0_idx:,2:-1] = theta_M[state_0_idx,2:-1]
-
-            f_parameters_per_building_layer_height.append(theta_F)
-            g_parameters_per_building_layer_height.append(theta_G)
-            m_parameters_per_building_layer_height.append(theta_M)
-
+        # inject noise to initial parameters for next epoch
+        param_f0 += perturbation_magnitude*param_f0*np.random.rand(len(param_f0))
+        param_g0 += perturbation_magnitude*param_g0*np.random.rand(len(param_g0))
+        param_m0 += perturbation_magnitude*param_m0*np.random.rand(len(param_m0))
+    
     return f_parameters_per_building_layer_height, g_parameters_per_building_layer_height, m_parameters_per_building_layer_height, all_training_times_per_state
+
+if __name__ == "__main__":
+    
+    dummy = 1
