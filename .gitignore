@@ -135,5 +135,5 @@ back_up/
 .vscode/
 *.pdf
 *.out
-.*zip
+*.zip
 .DS_Store
