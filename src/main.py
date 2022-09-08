@@ -151,7 +151,7 @@ def main(save_plots_ = False, seed = 0):
     ###############################################################################################
     # set prefered device for optimization
     print("Fit GP...")
-    models,likelihoods, GP_weights_normalizers, band_nominal_height_tensor, device = onopt.initializeGPModels(parameters,states,device_tp_optimize = 'cpu', output_scale = output_scale, length_mean = length_mean, length_var = length_var)
+    models,likelihoods, GP_weights_normalizers, band_nominal_height_tensor, device = onopt.initializeGPModels(parameters,states,device_to_optimize = 'cpu', output_scale = output_scale, length_mean = length_mean, length_var = length_var)
 
     # define hyperparams
     gp_model_to_load = '' # if empty, then optimize
