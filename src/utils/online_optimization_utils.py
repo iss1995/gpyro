@@ -1218,6 +1218,7 @@ def statesForBoundaries( points_used_for_training : list, on_boundary_ : list ):
 
     return points_used_for_training
 
+# TODO
 def onlineOptimization(layer_idxs, unique_state_values, points_used_for_training, bounds_f, bounds_g, bounds_m, F_reg, G_reg, M_reg, param_f0, param_g0, param_m0, on_boundary_, d_grid ):
     """
     Simulate online optimization by only feeding the system with data streamed on each layer.

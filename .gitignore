@@ -132,5 +132,8 @@ dmypy.json
 Gpyro-TD/
 results/
 back_up/
+.vscode/
 *.pdf
 *.out
+.*zip
+.DS_Store

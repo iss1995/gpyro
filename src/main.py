@@ -158,7 +158,7 @@ def main(save_plots_ = False, seed = 0):
     max_training_iter = 4000
     thress = 5e-4
     gp_opt_kwargs = {"learning_rate" : 0.1,
-                    "training_iter": max_training_iter,
+                    "max_training_iter": max_training_iter,
                     "loss_thress":thress,
                     "no_improvement_thress": 50,
                     "gp_model_to_load":gp_model_to_load}
