@@ -5,6 +5,8 @@ The current implementation is much faster than the one originally used to genera
 An example of usage can be found in the main.py file. To change folder paths folders, hyperparmaters etc. edit the function data_processing._config.config().
 There is also a hyperparameter optimization algorithm based on optuna.
 To install the dependencies you can run:
+
 > pip install -r requirements.txt
+
 The data used in the original paper can be found in data share (LINK). Unzip the data in the project folder.
 
