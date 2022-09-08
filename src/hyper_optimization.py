@@ -30,9 +30,6 @@ def executeMain(hyperparameters,kwargs,save_plots_ = False):
 def main(N = 100,save_plots_ = False):
 
     warnings.filterwarnings("ignore")
-    # preprocess training data and create scaler
-    ###############################################################################################
-    # save_plots_ = True
     print("Post-processing...")
 
     FILES_FOLDER,POINT_TEMPERATURE_FILES,POINT_COORDINATES,TRAJECTORY_FILES,RESULTS_FOLDER,RESULTS_FOLDER_GP,RESULTS_FOLDER_MODEL,d_grid,output_scale,length_mean,length_var,opt_kwargs = config.config()
@@ -143,7 +140,6 @@ def evaluate_hyperparamters( hyperparameters, bounds_f, bounds_g, bounds_m, para
             "param_m0": param_m0,
             "epochs" : epochs,
             "perturbation_magnitude" : 0.0}
-    # f_parameters_per_building_layer_height, g_parameters_per_building_layer_height, m_parameters_per_building_layer_height, all_training_times_per_state = onopt.onlineOptimization(layer_idxs, states, points_used_for_training, **kwargs )
     f_parameters_per_building_layer_height, g_parameters_per_building_layer_height, m_parameters_per_building_layer_height, all_training_times_per_state = onopt.batchOptimization(states, points_used_for_training, m , f, g, **kwargs )
 
     print(f"Mean Training time per state {np.mean(all_training_times_per_state)}")
@@ -163,15 +159,8 @@ def evaluate_hyperparamters( hyperparameters, bounds_f, bounds_g, bounds_m, para
     f_repository = np.asarray(f_parameters_per_building_layer_height[-1])[:,None]
 
     # overwirte elements of g and f where no training data were available. Assign values that will improve GP fit.
-    # are you sure it helps? maybe 0 better?
     states_with_no_excitation = np.where(states < 0)[0][::-1]
     state_with_first_excitation = np.where(states == 0)[0][0]
-    # m_repository[states_with_no_excitation[:-1],-1] = m_repository[states_with_no_excitation[-1],-1]
-    # g_repository[states_with_no_excitation[:-1],:] = g_repository[states_with_no_excitation[-1],:]
-    # f_repository[states_with_no_excitation[:-1],:] = f_repository[states_with_no_excitation[-1],:]
-    # m_repository[states_with_no_excitation[:-1],-1] = -m_repository[:states_with_no_excitation[-1],-1]
-    # g_repository[states_with_no_excitation[:-1],:] = -g_repository[:states_with_no_excitation[-1],:]
-    # f_repository[states_with_no_excitation[:-1],:] = -f_repository[:states_with_no_excitation[-1],:]
     m_repository[states_with_no_excitation,-1] = m_repository[state_with_first_excitation,-1] - \
             (m_repository[state_with_first_excitation+1:,-1] - m_repository[state_with_first_excitation,-1])
     g_repository[states_with_no_excitation,:] = g_repository[state_with_first_excitation,:] -\
@@ -179,15 +168,11 @@ def evaluate_hyperparamters( hyperparameters, bounds_f, bounds_g, bounds_m, para
     f_repository[states_with_no_excitation,:] = f_repository[state_with_first_excitation,:] -\
             ( f_repository[state_with_first_excitation+1:,:] - f_repository[state_with_first_excitation,:] )
 
-    # overwrite input coefs for not activated elemets
-    # m_repository[0,-1] = m_repository[-1,-1]
-
     parameters = np.concatenate((m_repository,g_repository,f_repository),axis = 1).T
 
     # %%
     # TRAIN GP
     ###############################################################################################
-    # TODO: check if cuda is available
     # set prefered device for optimization
     models,likelihoods, GP_weights_normalizers, band_nominal_height_tensor, device = onopt.initializeGPModels(parameters,states,device_tp_optimize = 'cpu', output_scale = output_scale, length_mean = length_mean, length_var = length_var)
     #print("GP model optimization starting:")
@@ -209,9 +194,6 @@ def evaluate_hyperparamters( hyperparameters, bounds_f, bounds_g, bounds_m, para
     # %%
     # Validate with online state propagation
     ###############################################################################################
-    # import importlib
-    # # importlib.reload(onopt)
-    # importlib.reload(exu)
 
     g = onopt.gTerm(params = g_repository)
     f = onopt.fTerm(params = f_repository)
@@ -220,7 +202,6 @@ def evaluate_hyperparamters( hyperparameters, bounds_f, bounds_g, bounds_m, para
 
     experiment_range = np.arange(2,len(experiment_ids))
     files_to_evaluate = [f"T{i}" for i in experiment_range]
-    # files_to_evaluate = [f"T26"]
     validation_experiments = [exp for exp in prc.experiments if exp.experiment_id in files_to_evaluate]
 
     # put files in order
@@ -256,19 +237,16 @@ class objective:
         self.kwargs = kwargs
 
     def __call__(self,trial):
-        g_reg = trial.suggest_float("g_reg", -4, -1)
-        # g_reg = -5
-        f_reg = trial.suggest_float("f_reg", -7, -4)
-        # f_reg = -3.4917008457058287
-        m_reg = trial.suggest_float("m_reg", -3, 0)
-        # m_reg = -2.298677092036098
-        output_scale = 0.5
-        length_mean = 0.1
-        length_var = 0.05
-        # output_scale = trial.suggest_float("output_scale", -1, 0)
-        # length_mean = trial.suggest_float("length_mean", -2, 0)
-        # length_var = trial.suggest_float("length_var", -3, -1)
 
+        # define hyperparams. Ranges are defined as powers of 10
+        g_reg = trial.suggest_float("g_reg", -4, -1)
+        f_reg = trial.suggest_float("f_reg", -7, -4)
+        m_reg = trial.suggest_float("m_reg", -3, 0)
+
+        # Here ranges are normally defined
+        output_scale = trial.suggest_float("output_scale", -1, 0)
+        length_mean = trial.suggest_float("length_mean", -2, 0)
+        length_var = trial.suggest_float("length_var", -3, -1)
 
         hyperparams = (10**g_reg, 10**f_reg, 10**m_reg, output_scale, length_mean, length_var)
         return executeMain(hyperparams, self.kwargs)
@@ -281,6 +259,9 @@ if __name__ == "__main__":
     random.seed(SEED)
 
     warnings.filterwarnings("ignore")
+
+    # Number of trials
     N = 100
+
     _ = main(N=N,save_plots_=False)
 # %%
