@@ -8,5 +8,5 @@ To install the dependencies you can run:
 
 > pip install -r requirements.txt
 
-The data used in the original paper can be found in data share (LINK). Unzip the data in the project folder.
+The data used in the original paper can be found in fig share ([LINK](https://figshare.com/articles/dataset/GPyro-TD_zip/21063190)). Unzip the data in the project folder.
 
